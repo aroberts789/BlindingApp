@@ -304,6 +304,7 @@ class FileBlinder:
                 })
 
         return diff_data
+
     def replace_keywords_in_text(self, text):
         """Replace keywords in text based on replacement dictionary"""
         if not text:
@@ -320,8 +321,10 @@ class FileBlinder:
         return text
 
     def remove_document_themes(self, doc):
-        """Remove document themes that might cause colored text"""
+        """Remove document themes that might cause colored text - AGGRESSIVE VERSION"""
         try:
+            from docx.shared import RGBColor
+
             # Clear theme colors by setting document to a basic theme
             if hasattr(doc, 'settings'):
                 try:
@@ -336,7 +339,8 @@ class FileBlinder:
                 # Find and remove theme elements
                 themes_to_remove = []
                 for child in doc_element.iter():
-                    if any(theme_word in str(child.tag).lower() for theme_word in ['theme', 'color', 'scheme']):
+                    tag_str = str(child.tag).lower()
+                    if any(theme_word in tag_str for theme_word in ['theme', 'themefont', 'clrscheme', 'fontscheme']):
                         themes_to_remove.append(child)
 
                 for theme in themes_to_remove:
@@ -346,6 +350,44 @@ class FileBlinder:
                             parent.remove(theme)
                         except:
                             pass
+
+                # Remove any theme color references throughout the document
+                namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+                # Find and remove theme color references (w:themeColor)
+                try:
+                    for color_elem in doc_element.xpath('.//w:color[@w:themeColor]', namespaces=namespaces):
+                        # Remove the themeColor attribute
+                        theme_color_attr = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor'
+                        if theme_color_attr in color_elem.attrib:
+                            del color_elem.attrib[theme_color_attr]
+                        # Set explicit black color
+                        color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+                except:
+                    pass
+
+                # Remove theme fill references
+                try:
+                    for fill_elem in doc_element.xpath('.//w:shd[@w:themeFill]', namespaces=namespaces):
+                        theme_fill_attr = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeFill'
+                        if theme_fill_attr in fill_elem.attrib:
+                            del fill_elem.attrib[theme_fill_attr]
+                        # Remove the entire shading element
+                        parent = fill_elem.getparent()
+                        if parent is not None:
+                            parent.remove(fill_elem)
+                except:
+                    pass
+
+                # Remove theme tint/shade attributes
+                try:
+                    for elem in doc_element.xpath('.//*[@w:themeTint or @w:themeShade]', namespaces=namespaces):
+                        for attr in ['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                     '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                            if attr in elem.attrib:
+                                del elem.attrib[attr]
+                except:
+                    pass
 
         except Exception as e:
             # Continue if theme removal fails
@@ -407,39 +449,257 @@ class FileBlinder:
             pass
 
     def remove_table_cell_shading(self, cell):
-        """Remove background shading from a table cell"""
+        """Remove background shading from a table cell - AGGRESSIVE VERSION"""
         try:
             # Work at the XML level to remove cell shading
             tc_element = cell._tc
 
-            # Find and remove shading elements from the cell
+            # Find and remove ALL shading/fill/background elements from the cell
             shading_elements_to_remove = []
             for child in tc_element.iter():
                 tag_str = str(child.tag).lower()
-                if any(shading_word in tag_str for shading_word in ['shd', 'fill', 'tcpr']):
-                    # Check if it's a shading element within table cell properties
-                    if 'shd' in tag_str:
-                        shading_elements_to_remove.append(child)
+                # Check for any shading-related tags
+                if any(shading_word in tag_str for shading_word in ['shd', 'fill', 'background', 'bgcolor']):
+                    shading_elements_to_remove.append(child)
 
             for shading_elem in shading_elements_to_remove:
                 parent = shading_elem.getparent()
                 if parent is not None:
-                    parent.remove(shading_elem)
+                    try:
+                        parent.remove(shading_elem)
+                    except:
+                        pass
 
-            # Also check for table cell properties and remove shading
+            # Also check for table cell properties and remove shading using XPath
             try:
-                for tcPr in tc_element.xpath('.//w:tcPr', namespaces={
-                    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
+                namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+                # Remove shading from cell properties
+                for tcPr in tc_element.xpath('.//w:tcPr', namespaces=namespaces):
                     # Remove any shading within table cell properties
-                    for shd in tcPr.xpath('.//w:shd', namespaces={
-                        'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}):
+                    for shd in tcPr.xpath('.//w:shd', namespaces=namespaces):
                         tcPr.remove(shd)
+
+                    # Also remove any fill elements
+                    for fill_elem in tcPr.xpath('.//*[contains(local-name(), "fill")]'):
+                        try:
+                            fill_elem.getparent().remove(fill_elem)
+                        except:
+                            pass
+            except:
+                pass
+
+            # Additional cleanup: clear any attributes that might contain color
+            try:
+                if hasattr(tc_element, 'attrib'):
+                    # Remove any color/fill attributes
+                    attrs_to_remove = [k for k in tc_element.attrib.keys()
+                                       if any(x in str(k).lower() for x in ['color', 'fill', 'shd', 'background'])]
+                    for attr in attrs_to_remove:
+                        del tc_element.attrib[attr]
             except:
                 pass
 
         except Exception as e:
             # Continue if cell shading removal fails
             pass
+
+    def remove_table_row_shading(self, row):
+        """Remove background shading from a table row"""
+        try:
+            # Work at the XML level to remove row shading
+            tr_element = row._tr
+
+            # Find and remove ALL shading/fill/background elements from the row
+            shading_elements_to_remove = []
+            for child in tr_element.iter():
+                tag_str = str(child.tag).lower()
+                # Check for any shading-related tags
+                if any(shading_word in tag_str for shading_word in ['shd', 'fill', 'background', 'bgcolor']):
+                    shading_elements_to_remove.append(child)
+
+            for shading_elem in shading_elements_to_remove:
+                parent = shading_elem.getparent()
+                if parent is not None:
+                    try:
+                        parent.remove(shading_elem)
+                    except:
+                        pass
+
+            # Also check for table row properties and remove shading using XPath
+            try:
+                namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+                # Remove shading from row properties
+                for trPr in tr_element.xpath('.//w:trPr', namespaces=namespaces):
+                    # Remove any shading within table row properties
+                    for shd in trPr.xpath('.//w:shd', namespaces=namespaces):
+                        trPr.remove(shd)
+            except:
+                pass
+
+        except Exception as e:
+            # Continue if row shading removal fails
+            pass
+
+    def remove_content_control_shading(self, doc):
+        """Remove background colors from content controls (structured document tags) - AGGRESSIVE"""
+        try:
+            from docx.shared import RGBColor
+
+            # Get the document element
+            doc_element = doc._element
+
+            namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+                          'w15': 'http://schemas.microsoft.com/office/word/2012/wordml'}
+
+            print("  Searching for content controls...")
+
+            # Find all SDT (structured document tag) elements - multiple namespace attempts
+            sdt_elements = []
+
+            # Try different XPath patterns
+            try:
+                sdt_elements.extend(doc_element.xpath('.//w:sdt', namespaces=namespaces))
+            except:
+                pass
+
+            # Also try iterating and finding by tag name
+            for elem in doc_element.iter():
+                if 'sdt' in str(elem.tag).lower():
+                    if elem not in sdt_elements:
+                        sdt_elements.append(elem)
+
+            print(f"  Found {len(sdt_elements)} content controls")
+
+            for sdt in sdt_elements:
+                try:
+                    # Find SDT properties multiple ways
+                    sdtPr_elements = []
+
+                    # Try XPath
+                    try:
+                        sdtPr_elements.extend(sdt.xpath('.//w:sdtPr', namespaces=namespaces))
+                    except:
+                        pass
+
+                    # Also iterate children
+                    for child in sdt:
+                        if 'sdtpr' in str(child.tag).lower():
+                            if child not in sdtPr_elements:
+                                sdtPr_elements.append(child)
+
+                    for sdtPr in sdtPr_elements:
+                        # REMOVE STYLE REFERENCES - this is what causes the blue background!
+                        print("    Removing style references from SDT (AGGRESSIVE)...")
+
+                        # Method 1: Remove by iterating through all children
+                        style_elements_to_remove = []
+                        for child in list(sdtPr):
+                            tag_str = str(child.tag).lower()
+                            if 'rpr' in tag_str or 'ppr' in tag_str or 'style' in tag_str:
+                                style_elements_to_remove.append(child)
+                                print(f"      Found style element to remove: {child.tag}")
+
+                        for elem in style_elements_to_remove:
+                            try:
+                                sdtPr.remove(elem)
+                                print(f"      Removed style element: {elem.tag}")
+                            except Exception as e:
+                                print(f"      Could not remove style {elem.tag}: {e}")
+
+                        # Method 2: Use XPath to find and remove rPr and pPr
+                        try:
+                            for rPr in sdtPr.xpath('.//w:rPr', namespaces=namespaces):
+                                parent = rPr.getparent()
+                                if parent is not None:
+                                    parent.remove(rPr)
+                                    print(f"      Removed w:rPr via XPath")
+                        except Exception as e:
+                            print(f"      XPath rPr removal error: {e}")
+
+                        try:
+                            for pPr in sdtPr.xpath('.//w:pPr', namespaces=namespaces):
+                                parent = pPr.getparent()
+                                if parent is not None:
+                                    parent.remove(pPr)
+                                    print(f"      Removed w:pPr via XPath")
+                        except Exception as e:
+                            print(f"      XPath pPr removal error: {e}")
+
+                        # SET appearance to hidden (removes border)
+                        appearance_found = False
+                        try:
+                            for appearance in sdtPr.xpath('.//w:appearance', namespaces=namespaces):
+                                appearance.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                               'hidden')
+                                appearance_found = True
+                                print(f"    Set SDT appearance to hidden")
+                        except:
+                            pass
+
+                        # If no appearance, create one
+                        if not appearance_found:
+                            try:
+                                from xml.etree import ElementTree as ET
+                                appearance_elem = ET.Element(
+                                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}appearance')
+                                appearance_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                                    'hidden')
+                                sdtPr.insert(0, appearance_elem)
+                                print(f"    Created hidden appearance for SDT")
+                            except:
+                                pass
+
+                        # Remove ANY element related to color/shading/border
+                        elements_to_remove = []
+                        for child in list(sdtPr):
+                            tag_name = str(child.tag).lower()
+                            if any(x in tag_name for x in ['color', 'shd', 'fill', 'background', 'bdr', 'border']):
+                                elements_to_remove.append(child)
+                                print(f"    Marking for removal: {child.tag}")
+
+                        for elem in elements_to_remove:
+                            try:
+                                sdtPr.remove(elem)
+                                print(f"    Removed SDT property: {elem.tag}")
+                            except Exception as e:
+                                print(f"    Could not remove {elem.tag}: {e}")
+
+                        # Also specifically target with XPath
+                        try:
+                            for color in sdtPr.xpath('.//w:color', namespaces=namespaces):
+                                sdtPr.remove(color)
+                                print("    Removed w:color via XPath")
+                            for color in sdtPr.xpath('.//w15:color', namespaces=namespaces):
+                                sdtPr.remove(color)
+                                print("    Removed w15:color via XPath")
+                            for shd in sdtPr.xpath('.//w:shd', namespaces=namespaces):
+                                sdtPr.remove(shd)
+                                print("    Removed w:shd via XPath")
+                        except Exception as e:
+                            print(f"    XPath removal error: {e}")
+
+                        # Remove any attributes related to colors or borders
+                        attrs_to_remove = []
+                        for attr_name in list(sdtPr.attrib.keys()):
+                            if any(x in attr_name.lower() for x in
+                                   ['color', 'appearance', 'fill', 'border', 'bdr', 'style']):
+                                attrs_to_remove.append(attr_name)
+
+                        for attr in attrs_to_remove:
+                            del sdtPr.attrib[attr]
+                            print(f"    Removed attribute: {attr}")
+
+                except Exception as e:
+                    print(f"    Error processing SDT: {e}")
+                    import traceback
+                    print(traceback.format_exc())
+
+        except Exception as e:
+            print(f"  Content control shading removal error: {e}")
+            import traceback
+            print(traceback.format_exc())
 
     def remove_paragraph_borders(self, paragraph):
         """Remove paragraph borders"""
@@ -538,25 +798,78 @@ class FileBlinder:
             pass
 
     def remove_hyperlinks_from_paragraph(self, paragraph):
-        """Remove hyperlinks from a paragraph while keeping the text"""
+        """Remove hyperlinks from a paragraph while preserving the text content"""
         try:
-            # Find all hyperlink elements in the paragraph
+            from docx.shared import RGBColor
+
             p_element = paragraph._element
 
-            # Remove hyperlink formatting but keep text
-            hyperlinks_to_remove = []
+            # Find all hyperlink elements
+            hyperlinks = []
             for child in p_element.iter():
                 if 'hyperlink' in str(child.tag).lower():
-                    hyperlinks_to_remove.append(child)
+                    hyperlinks.append(child)
 
-            for hyperlink in hyperlinks_to_remove:
-                # Get the text content before removing
-                text_content = hyperlink.text or ""
+            # Process each hyperlink
+            for hyperlink in hyperlinks:
+                # Extract all text runs from the hyperlink before removing it
+                # Hyperlinks contain runs (w:r elements) that have the actual text
                 parent = hyperlink.getparent()
                 if parent is not None:
-                    # Replace hyperlink with plain text
+                    # Get the position of the hyperlink in the parent
+                    hyperlink_index = list(parent).index(hyperlink)
+
+                    # Extract all child elements (runs) from the hyperlink
+                    children_to_preserve = list(hyperlink)
+
+                    # Process each run to remove hyperlink formatting (underline, blue color)
+                    for child in children_to_preserve:
+                        # Look for run properties (rPr) within each run
+                        try:
+                            for rPr in child.iter():
+                                if 'rPr' in str(rPr.tag):
+                                    # Remove underline elements
+                                    underlines_to_remove = []
+                                    for elem in rPr:
+                                        if 'u' in str(elem.tag).lower() and 'u' == str(elem.tag).split('}')[-1]:
+                                            underlines_to_remove.append(elem)
+
+                                    for u_elem in underlines_to_remove:
+                                        rPr.remove(u_elem)
+
+                                    # Remove color elements (the blue hyperlink color)
+                                    colors_to_remove = []
+                                    for elem in rPr:
+                                        if 'color' in str(elem.tag).lower():
+                                            colors_to_remove.append(elem)
+
+                                    for color_elem in colors_to_remove:
+                                        rPr.remove(color_elem)
+                        except:
+                            pass
+
+                    # Insert the runs directly into the paragraph where the hyperlink was
+                    for i, child in enumerate(children_to_preserve):
+                        parent.insert(hyperlink_index + i, child)
+
+                    # Now remove the empty hyperlink element
                     parent.remove(hyperlink)
-                    # Note: The text should be preserved by the run processing
+
+            # After removing hyperlinks, process all runs again to ensure formatting
+            for run in paragraph.runs:
+                try:
+                    # Remove underline
+                    run.font.underline = None
+
+                    # Set color to black
+                    if self.font_color_black:
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                        try:
+                            run.font.color.theme_color = None
+                        except:
+                            pass
+                except:
+                    pass
 
         except Exception as e:
             # Continue if hyperlink removal fails
@@ -607,6 +920,10 @@ class FileBlinder:
         # Remove document themes that might cause colored text
         print("Removing document themes...")
         self.remove_document_themes(doc)
+
+        # Remove content control (SDT) background colors
+        print("Removing content control shading...")
+        self.remove_content_control_shading(doc)
 
         images_removed = 0
         text_replacements = 0
@@ -662,7 +979,7 @@ class FileBlinder:
                 # Apply formatting standardization
                 self.standardize_run_formatting(run)
 
-            # Remove hyperlinks, list formatting, borders, and shading
+            # Remove hyperlinks (preserving text), list formatting, borders, and shading
             self.remove_hyperlinks_from_paragraph(paragraph)
             self.remove_list_formatting(paragraph)
             self.remove_paragraph_borders(paragraph)
@@ -673,8 +990,11 @@ class FileBlinder:
         for table_idx, table in enumerate(doc.tables):
             print(f"  Processing table {table_idx + 1}/{len(doc.tables)}")
             for row in table.rows:
+                # Remove row-level shading first
+                self.remove_table_row_shading(row)
+
                 for cell in row.cells:
-                    # Remove cell-level shading (this handles the orange backgrounds)
+                    # Remove cell-level shading (this handles the orange/blue backgrounds)
                     self.remove_table_cell_shading(cell)
 
                     for paragraph in cell.paragraphs:
@@ -722,7 +1042,7 @@ class FileBlinder:
                             # Apply formatting standardization
                             self.standardize_run_formatting(run)
 
-                        # Remove hyperlinks, list formatting, borders, and shading from table cells
+                        # Remove hyperlinks (preserving text), list formatting, borders, and shading from table cells
                         self.remove_hyperlinks_from_paragraph(paragraph)
                         self.remove_list_formatting(paragraph)
                         self.remove_paragraph_borders(paragraph)
@@ -764,6 +1084,9 @@ class FileBlinder:
                         # Apply formatting standardization
                         self.standardize_run_formatting(run)
 
+                    # Remove hyperlinks from headers
+                    self.remove_hyperlinks_from_paragraph(paragraph)
+
             # Process footer
             if section.footer:
                 for paragraph in section.footer.paragraphs:
@@ -797,6 +1120,9 @@ class FileBlinder:
                         # Apply formatting standardization
                         self.standardize_run_formatting(run)
 
+                    # Remove hyperlinks from footers
+                    self.remove_hyperlinks_from_paragraph(paragraph)
+
         print("Saving document...")
         doc.save(output_path)
 
@@ -819,7 +1145,8 @@ class FileBlinder:
             # Define XML namespace
             namespaces = {
                 'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
-                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'
             }
 
             # Register namespaces
@@ -828,6 +1155,79 @@ class FileBlinder:
 
             images_removed = 0
             text_replacements = 0
+            hyperlinks_removed = 0
+
+            # NEUTRALIZE THEME FILES - Replace theme colors with black/white
+            print("Neutralizing theme colors...")
+            theme_dir = temp_dir / 'word' / 'theme'
+            if theme_dir.exists():
+                for theme_file in theme_dir.glob('*.xml'):
+                    try:
+                        tree = ET.parse(theme_file)
+                        root = tree.getroot()
+
+                        # Find all color scheme elements and replace with neutral colors
+                        for color_scheme in root.iter():
+                            tag = str(color_scheme.tag)
+                            # Replace theme colors with black or white
+                            if 'clrScheme' in tag or 'color' in tag.lower():
+                                for color_elem in color_scheme:
+                                    # Set all colors to either black (000000) or white (FFFFFF)
+                                    for child in color_elem:
+                                        if 'srgbClr' in str(child.tag):
+                                            child.set('val', '000000')  # Black
+                                        elif 'sysClr' in str(child.tag):
+                                            child.set('val', 'windowText')
+                                            child.set('lastClr', '000000')
+
+                        tree.write(theme_file, encoding='utf-8', xml_declaration=True)
+                        print(f"  Neutralized {theme_file.name}")
+                    except Exception as e:
+                        print(f"  Could not process theme file {theme_file.name}: {e}")
+
+            # NEUTRALIZE STYLES.XML - Remove theme color references
+            print("Neutralizing style theme references...")
+            styles_xml = temp_dir / 'word' / 'styles.xml'
+            if styles_xml.exists():
+                try:
+                    tree = ET.parse(styles_xml)
+                    root = tree.getroot()
+
+                    # Build a parent map since ElementTree doesn't have getparent()
+                    parent_map = {c: p for p in tree.iter() for c in p}
+
+                    # First pass: Remove all theme color attributes
+                    for elem in root.iter():
+                        # Remove theme color attributes
+                        attrs_to_remove = []
+                        for attr_name in list(elem.attrib.keys()):
+                            if 'theme' in attr_name.lower() and 'color' in attr_name.lower():
+                                attrs_to_remove.append(attr_name)
+
+                        for attr in attrs_to_remove:
+                            del elem.attrib[attr]
+
+                    # Second pass: Mark shading elements for removal (don't remove while iterating)
+                    elements_to_remove = []
+                    for elem in root.iter():
+                        if 'shd' in str(elem.tag).lower():
+                            elements_to_remove.append(elem)
+
+                    # Third pass: Remove marked elements using parent map
+                    for elem in elements_to_remove:
+                        parent = parent_map.get(elem)
+                        if parent is not None:
+                            try:
+                                parent.remove(elem)
+                            except:
+                                pass
+
+                    tree.write(styles_xml, encoding='utf-8', xml_declaration=True)
+                    print(f"  Neutralized styles.xml")
+                except Exception as e:
+                    print(f"  Could not process styles.xml: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             # Process main document
             document_xml = temp_dir / 'word' / 'document.xml'
@@ -836,19 +1236,229 @@ class FileBlinder:
                 tree = ET.parse(document_xml)
                 root = tree.getroot()
 
+                # Build parent map for element removal
+                parent_map = {c: p for p in tree.iter() for c in p}
+
                 # Remove drawing elements (images)
-                for drawing in root.findall('.//w:drawing', namespaces):
-                    parent = drawing.getparent()
+                drawings_to_remove = root.findall('.//w:drawing', namespaces)
+                for drawing in drawings_to_remove:
+                    parent = parent_map.get(drawing)
                     if parent is not None:
                         parent.remove(drawing)
                         images_removed += 1
 
                 # Remove object elements
-                for obj in root.findall('.//w:object', namespaces):
-                    parent = obj.getparent()
+                objects_to_remove = root.findall('.//w:object', namespaces)
+                for obj in objects_to_remove:
+                    parent = parent_map.get(obj)
                     if parent is not None:
                         parent.remove(obj)
                         images_removed += 1
+
+                # Remove all shading elements (table cells, rows, paragraphs)
+                shading_to_remove = root.findall('.//w:shd', namespaces)
+                for shd in shading_to_remove:
+                    parent = parent_map.get(shd)
+                    if parent is not None:
+                        try:
+                            parent.remove(shd)
+                        except:
+                            pass
+
+                # FORCE ALL TEXT TO BLACK COLOR
+                print("Forcing all text to black color...")
+                for rPr in root.findall('.//w:rPr', namespaces):
+                    # Find or create color element
+                    color_elem = rPr.find('w:color', namespaces)
+                    if color_elem is None:
+                        # Create new color element
+                        color_elem = ET.Element('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                        rPr.insert(0, color_elem)
+
+                    # Set to black and remove theme color
+                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+
+                    # Remove theme color attributes if they exist
+                    theme_color_attr = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor'
+                    theme_tint_attr = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint'
+                    theme_shade_attr = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade'
+
+                    if theme_color_attr in color_elem.attrib:
+                        del color_elem.attrib[theme_color_attr]
+                    if theme_tint_attr in color_elem.attrib:
+                        del color_elem.attrib[theme_tint_attr]
+                    if theme_shade_attr in color_elem.attrib:
+                        del color_elem.attrib[theme_shade_attr]
+
+                # Remove content control (SDT) appearance/color properties AND BORDERS
+                print("Removing content control styling...")
+                for sdt in root.findall('.//w:sdt', namespaces):
+                    try:
+                        for sdtPr in sdt.findall('.//w:sdtPr', namespaces):
+                            # Build parent map for this subtree
+                            sdt_parent_map = {c: p for p in sdtPr.iter() for c in p}
+
+                            # REMOVE STYLE REFERENCES - this is what causes the blue background!
+                            print("  Resetting content control style...")
+                            # Remove run properties (character styles)
+                            for rPrElem in sdtPr.findall('.//w:rPr', namespaces):
+                                parent = sdt_parent_map.get(rPrElem, sdtPr)
+                                if parent is not None:
+                                    try:
+                                        parent.remove(rPrElem)
+                                        print("    Removed rPr (run properties/style) from SDT")
+                                    except:
+                                        pass
+
+                            # Remove paragraph properties (paragraph styles)
+                            for pPrElem in sdtPr.findall('.//w:pPr', namespaces):
+                                parent = sdt_parent_map.get(pPrElem, sdtPr)
+                                if parent is not None:
+                                    try:
+                                        parent.remove(pPrElem)
+                                        print("    Removed pPr (paragraph properties/style) from SDT")
+                                    except:
+                                        pass
+
+                            # Remove any direct children that are style-related
+                            direct_children_to_remove = []
+                            for child in list(sdtPr):
+                                tag_lower = str(child.tag).lower()
+                                if 'rpr' in tag_lower or 'ppr' in tag_lower:
+                                    direct_children_to_remove.append(child)
+                                    print(f"    Marking style child for removal: {child.tag}")
+
+                            for child in direct_children_to_remove:
+                                try:
+                                    sdtPr.remove(child)
+                                    print(f"    Removed style child: {child.tag}")
+                                except:
+                                    pass
+
+                            # SET appearance to hidden (removes border)
+                            appearance_found = False
+                            for appearance in sdtPr.findall('.//w:appearance', namespaces):
+                                # Set appearance to "hidden" to remove border
+                                appearance.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                               'hidden')
+                                appearance_found = True
+                                print("    Set appearance to hidden")
+
+                            # If no appearance element exists, create one set to hidden
+                            if not appearance_found:
+                                appearance_elem = ET.Element(
+                                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}appearance')
+                                appearance_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                                    'hidden')
+                                sdtPr.insert(0, appearance_elem)
+                                print("    Created hidden appearance")
+
+                            # Remove color elements
+                            for color in sdtPr.findall('.//w:color', namespaces):
+                                parent = sdt_parent_map.get(color, sdtPr)
+                                if parent is not None:
+                                    try:
+                                        parent.remove(color)
+                                    except:
+                                        pass
+
+                            # Remove any shading in SDT properties
+                            for shd in sdtPr.findall('.//w:shd', namespaces):
+                                parent = sdt_parent_map.get(shd, sdtPr)
+                                if parent is not None:
+                                    try:
+                                        parent.remove(shd)
+                                    except:
+                                        pass
+
+                            # Remove border-related elements more aggressively
+                            all_children = list(sdtPr)
+                            for child in all_children:
+                                tag_str = str(child.tag).lower()
+                                if any(x in tag_str for x in ['bdr', 'border']):
+                                    try:
+                                        sdtPr.remove(child)
+                                    except:
+                                        pass
+
+                        # NOW ALSO PROCESS THE CONTENT INSIDE THE SDT (sdtContent)
+                        # This is where the paragraph style that causes the blue background lives!
+                        print("  Removing styles from content inside SDT...")
+                        for sdtContent in sdt.findall('.//w:sdtContent', namespaces):
+                            # Find all paragraphs inside the content
+                            for para in sdtContent.findall('.//w:p', namespaces):
+                                # Find paragraph properties
+                                for pPr in para.findall('.//w:pPr', namespaces):
+                                    # Remove paragraph style references (w:pStyle)
+                                    for pStyle in pPr.findall('.//w:pStyle', namespaces):
+                                        pPr.remove(pStyle)
+                                        print(f"    Removed paragraph style reference from content")
+
+                                    # Remove shading from paragraph
+                                    for shd in pPr.findall('.//w:shd', namespaces):
+                                        pPr.remove(shd)
+                                        print(f"    Removed shading from paragraph")
+
+                                # Also process runs inside these paragraphs
+                                for run in para.findall('.//w:r', namespaces):
+                                    for rPr in run.findall('.//w:rPr', namespaces):
+                                        # Remove run style references (w:rStyle)
+                                        for rStyle in rPr.findall('.//w:rStyle', namespaces):
+                                            rPr.remove(rStyle)
+                                            print(f"    Removed run style reference from content")
+
+                                        # Remove shading from runs
+                                        for shd in rPr.findall('.//w:shd', namespaces):
+                                            rPr.remove(shd)
+                                            print(f"    Removed shading from run")
+
+                    except Exception as e:
+                        print(f"  Error processing SDT: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                # Remove hyperlinks while preserving text content
+                for hyperlink in root.findall('.//w:hyperlink', namespaces):
+                    parent = parent_map.get(hyperlink)
+                    if parent is not None:
+                        # Get the position of the hyperlink
+                        hyperlink_index = list(parent).index(hyperlink)
+
+                        # Move all children (runs) from hyperlink to parent
+                        # AND remove hyperlink formatting (blue color, underline)
+                        for i, child in enumerate(list(hyperlink)):
+                            # If this is a run (w:r), clean up its formatting
+                            if 'r' in str(child.tag).lower() and 'r' == str(child.tag).split('}')[-1]:
+                                # Find run properties
+                                for rPr in child.findall('w:rPr', namespaces):
+                                    # Remove underline
+                                    underline_elems = rPr.findall('w:u', namespaces)
+                                    for u_elem in underline_elems:
+                                        rPr.remove(u_elem)
+
+                                    # Force color to black and remove theme color
+                                    color_elem = rPr.find('w:color', namespaces)
+                                    if color_elem is None:
+                                        color_elem = ET.Element(
+                                            '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                                        rPr.insert(0, color_elem)
+
+                                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                                   '000000')
+
+                                    # Remove theme color attributes
+                                    for attr in [
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                                        if attr in color_elem.attrib:
+                                            del color_elem.attrib[attr]
+
+                            parent.insert(hyperlink_index + i, child)
+
+                        # Remove the hyperlink element
+                        parent.remove(hyperlink)
+                        hyperlinks_removed += 1
 
                 # Replace text in text elements
                 for text_elem in root.findall('.//w:t', namespaces):
@@ -869,12 +1479,68 @@ class FileBlinder:
                 tree = ET.parse(header_file)
                 root = tree.getroot()
 
+                # Build parent map
+                parent_map = {c: p for p in tree.iter() for c in p}
+
                 # Remove images
                 for drawing in root.findall('.//w:drawing', namespaces):
-                    parent = drawing.getparent()
+                    parent = parent_map.get(drawing)
                     if parent is not None:
                         parent.remove(drawing)
                         images_removed += 1
+
+                # Remove all shading elements
+                for shd in root.findall('.//w:shd', namespaces):
+                    parent = parent_map.get(shd)
+                    if parent is not None:
+                        try:
+                            parent.remove(shd)
+                        except:
+                            pass
+
+                # FORCE ALL TEXT TO BLACK COLOR
+                for rPr in root.findall('.//w:rPr', namespaces):
+                    color_elem = rPr.find('w:color', namespaces)
+                    if color_elem is None:
+                        color_elem = ET.Element('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                        rPr.insert(0, color_elem)
+                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+                    # Remove theme attributes
+                    for attr in ['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                        if attr in color_elem.attrib:
+                            del color_elem.attrib[attr]
+
+                # Remove hyperlinks while preserving text
+                for hyperlink in root.findall('.//w:hyperlink', namespaces):
+                    parent = parent_map.get(hyperlink)
+                    if parent is not None:
+                        hyperlink_index = list(parent).index(hyperlink)
+                        # Clean up formatting in runs from hyperlinks
+                        for i, child in enumerate(list(hyperlink)):
+                            if 'r' in str(child.tag).lower() and 'r' == str(child.tag).split('}')[-1]:
+                                for rPr in child.findall('w:rPr', namespaces):
+                                    # Remove underline
+                                    for u_elem in rPr.findall('w:u', namespaces):
+                                        rPr.remove(u_elem)
+                                    # Force color to black
+                                    color_elem = rPr.find('w:color', namespaces)
+                                    if color_elem is None:
+                                        color_elem = ET.Element(
+                                            '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                                        rPr.insert(0, color_elem)
+                                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                                   '000000')
+                                    for attr in [
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                                        if attr in color_elem.attrib:
+                                            del color_elem.attrib[attr]
+                            parent.insert(hyperlink_index + i, child)
+                        parent.remove(hyperlink)
+                        hyperlinks_removed += 1
 
                 # Replace text
                 for text_elem in root.findall('.//w:t', namespaces):
@@ -894,12 +1560,68 @@ class FileBlinder:
                 tree = ET.parse(footer_file)
                 root = tree.getroot()
 
+                # Build parent map
+                parent_map = {c: p for p in tree.iter() for c in p}
+
                 # Remove images
                 for drawing in root.findall('.//w:drawing', namespaces):
-                    parent = drawing.getparent()
+                    parent = parent_map.get(drawing)
                     if parent is not None:
                         parent.remove(drawing)
                         images_removed += 1
+
+                # Remove all shading elements
+                for shd in root.findall('.//w:shd', namespaces):
+                    parent = parent_map.get(shd)
+                    if parent is not None:
+                        try:
+                            parent.remove(shd)
+                        except:
+                            pass
+
+                # FORCE ALL TEXT TO BLACK COLOR
+                for rPr in root.findall('.//w:rPr', namespaces):
+                    color_elem = rPr.find('w:color', namespaces)
+                    if color_elem is None:
+                        color_elem = ET.Element('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                        rPr.insert(0, color_elem)
+                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+                    # Remove theme attributes
+                    for attr in ['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                        if attr in color_elem.attrib:
+                            del color_elem.attrib[attr]
+
+                # Remove hyperlinks while preserving text
+                for hyperlink in root.findall('.//w:hyperlink', namespaces):
+                    parent = parent_map.get(hyperlink)
+                    if parent is not None:
+                        hyperlink_index = list(parent).index(hyperlink)
+                        # Clean up formatting in runs from hyperlinks
+                        for i, child in enumerate(list(hyperlink)):
+                            if 'r' in str(child.tag).lower() and 'r' == str(child.tag).split('}')[-1]:
+                                for rPr in child.findall('w:rPr', namespaces):
+                                    # Remove underline
+                                    for u_elem in rPr.findall('w:u', namespaces):
+                                        rPr.remove(u_elem)
+                                    # Force color to black
+                                    color_elem = rPr.find('w:color', namespaces)
+                                    if color_elem is None:
+                                        color_elem = ET.Element(
+                                            '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                                        rPr.insert(0, color_elem)
+                                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val',
+                                                   '000000')
+                                    for attr in [
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                        '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                                        if attr in color_elem.attrib:
+                                            del color_elem.attrib[attr]
+                            parent.insert(hyperlink_index + i, child)
+                        parent.remove(hyperlink)
+                        hyperlinks_removed += 1
 
                 # Replace text
                 for text_elem in root.findall('.//w:t', namespaces):
@@ -922,6 +1644,7 @@ class FileBlinder:
                         zip_out.write(file_path, arc_path)
 
             print(f"✓ Removed {images_removed} images/objects")
+            print(f"✓ Removed {hyperlinks_removed} hyperlinks (text preserved)")
             print(f"✓ Made {text_replacements} text replacements")
 
         return output_path
@@ -959,6 +1682,15 @@ class FileBlinder:
                     style_tag.string = css_content
                     images_removed += 1
 
+        # Remove hyperlinks but keep text content
+        hyperlinks_removed = 0
+        for link in soup.find_all('a'):
+            # Get the text content
+            link_text = link.get_text()
+            # Replace the link with just the text
+            link.replace_with(link_text)
+            hyperlinks_removed += 1
+
         # Replace keywords in text nodes
         text_replacements = 0
 
@@ -989,6 +1721,7 @@ class FileBlinder:
             file.write(str(soup))
 
         print(f"✓ Removed {images_removed} images/graphics")
+        print(f"✓ Removed {hyperlinks_removed} hyperlinks (text preserved)")
         print(f"✓ Made {text_replacements} text replacements")
 
         return output_path
@@ -1152,6 +1885,7 @@ def main():
     print("✓ All highlighting and shading will be removed")
     print("✓ All table cell backgrounds will be removed")
     print("✓ All borders will be removed")
+    print("✓ All hyperlinks will be removed (text preserved)")
     print("✓ Document themes will be removed")
     print()
 
@@ -1180,6 +1914,7 @@ def main():
             print("✓ All text changed to black with no highlighting")
             print("✓ All table cell backgrounds removed")
             print("✓ All borders and shading removed")
+            print("✓ All hyperlinks removed (text preserved)")
             print("✓ Document themes removed")
             print("✓ Tables, spacing, layout maintained")
             print("✓ Images and graphics removed")

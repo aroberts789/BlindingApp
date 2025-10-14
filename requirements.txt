@@ -1,0 +1,4 @@
+flask==2.3.3
+python-docx==0.8.11
+beautifulsoup4==4.12.2
+werkzeug==2.3.7

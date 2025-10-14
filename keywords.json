@@ -1,0 +1,66 @@
+{
+  "keywords": [
+    {
+      "enabled": true,
+      "original": "confidential",
+      "replacement": "REDACTED"
+    },
+    {
+      "enabled": true,
+      "original": "SMITHRX",
+      "replacement": "REDACTED"
+    },
+    {
+      "enabled": true,
+      "original": "Banjo",
+      "replacement": "REDACTED"
+    },
+    {
+      "enabled": true,
+      "original": "Anchor",
+      "replacement": "REDACTED"
+    },
+    {
+      "enabled": true,
+      "original": "Apex",
+      "replacement": "REDACTED"
+    },
+    {
+      "enabled": true,
+      "original": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b",
+      "replacement": "EMAIL"
+    },
+    {
+      "enabled": true,
+      "original": "\\b\\d{3}[-.]?\\d{3}[-.]?\\d{4}\\b",
+      "replacement": "PHONE"
+    },
+    {
+      "enabled": true,
+      "original": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+      "replacement": "SSN"
+    },
+    {
+      "enabled": true,
+      "original": "\\b\\d{1,2}/\\d{1,2}/\\d{4}\\b",
+      "replacement": "DATE"
+    },
+    {
+      "original": "test",
+      "replacement": "REDACTED",
+      "enabled": true
+    },
+    {
+      "original": "CIMZIA",
+      "replacement": "REDACTED",
+      "enabled": true
+    },
+    {
+      "original": "SRX",
+      "replacement": "REDACTED",
+      "enabled": true
+    }
+  ],
+  "version": "1.0",
+  "last_updated": "1759256440.437024"
+}

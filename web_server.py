@@ -196,6 +196,8 @@ def preview_file():
         print(f"Error generating preview: {e}")
         print(traceback.format_exc())
         return jsonify({'error': f'Preview generation error: {str(e)}'}), 500
+
+
 # Complete HTML template with keyword management
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -726,6 +728,47 @@ HTML_TEMPLATE = """
             padding: 40px 20px;
         }
 
+        .file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .file-list-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-list-item .file-name {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .file-list-item .file-size {
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .file-list-item .remove-file {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 5px 12px;
+            border-radius: 15px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+        }
+
+        .file-list-item .remove-file:hover {
+            background: #c82333;
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -764,7 +807,8 @@ HTML_TEMPLATE = """
             .tabs {
                 flex-direction: column;
             }
-        
+        }
+
         /* Preview Modal Styles */
         #previewModal {
             display: none;
@@ -775,11 +819,11 @@ HTML_TEMPLATE = """
             height: 100vh;
             z-index: 999999;
         }
-        
+
         #previewModal.show {
             display: block;
         }
-        
+
         .modal-overlay {
             position: absolute;
             top: 0;
@@ -793,7 +837,7 @@ HTML_TEMPLATE = """
             padding: 20px;
             box-sizing: border-box;
         }
-        
+
         .modal {
             background: white;
             border-radius: 12px;
@@ -806,7 +850,7 @@ HTML_TEMPLATE = """
             box-shadow: 0 20px 60px rgba(0,0,0,0.5);
             position: relative;
         }
-        
+
         .diff-container {
             flex: 1;
             overflow: hidden;
@@ -815,7 +859,7 @@ HTML_TEMPLATE = """
             gap: 2px;
             min-height: 0;
         }
-        
+
         .document-panel {
             flex: 1;
             display: flex;
@@ -823,7 +867,7 @@ HTML_TEMPLATE = """
             background: white;
             min-height: 0;
         }
-        
+
         .document-header {
             padding: 15px 20px;
             background: #f8f9fa;
@@ -831,7 +875,7 @@ HTML_TEMPLATE = """
             font-weight: 600;
             flex-shrink: 0;
         }
-        
+
         .document-content {
             flex: 1;
             overflow-y: auto;
@@ -839,7 +883,7 @@ HTML_TEMPLATE = """
             background: white;
             min-height: 0;
         }
-        
+
         .document-page {
             max-width: 650px;
             margin: 0 auto;
@@ -850,18 +894,18 @@ HTML_TEMPLATE = """
             font-size: 11pt;
             line-height: 1.6;
         }
-        
+
         .paragraph {
             margin-bottom: 12px;
             position: relative;
         }
-        
+
         .paragraph.has-change {
             padding: 8px;
             margin: -8px;
             border-radius: 4px;
         }
-        
+
         .paragraph.has-change::before {
             content: '';
             position: absolute;
@@ -872,7 +916,7 @@ HTML_TEMPLATE = """
             background: #667eea;
             border-radius: 2px;
         }
-        
+
         .change-deleted {
             background: #ffe6e6;
             text-decoration: line-through;
@@ -880,7 +924,7 @@ HTML_TEMPLATE = """
             padding: 2px 4px;
             border-radius: 2px;
         }
-        
+
         .change-inserted {
             background: #e6f7e6;
             color: #2e7d32;
@@ -888,7 +932,7 @@ HTML_TEMPLATE = """
             padding: 2px 4px;
             border-radius: 2px;
         }
-        
+
         .image-block {
             margin: 20px 0;
             padding: 40px;
@@ -898,42 +942,42 @@ HTML_TEMPLATE = """
             text-align: center;
             color: #666;
         }
-        
+
         .image-block.removed {
             background: #ffebee;
             border-color: #ef5350;
             color: #c62828;
         }
-        
+
         .legend {
             display: flex;
             gap: 20px;
             font-size: 0.9rem;
         }
-        
+
         .legend-item {
             display: flex;
             align-items: center;
             gap: 6px;
         }
-        
+
         .legend-box {
             width: 20px;
             height: 20px;
             border-radius: 3px;
             border: 1px solid;
         }
-        
+
         .legend-delete {
             background: #ffe6e6;
             border-color: #ffcccc;
         }
-        
+
         .legend-insert {
             background: #e6f7e6;
             border-color: #b3e6b3;
         }
-        
+
         .modal-header {
             padding: 20px 30px;
             border-bottom: 2px solid #e0e0e0;
@@ -945,7 +989,7 @@ HTML_TEMPLATE = """
             border-radius: 12px 12px 0 0;
             flex-shrink: 0;
         }
-        
+
         .close-btn {
             background: none;
             border: none;
@@ -959,11 +1003,11 @@ HTML_TEMPLATE = """
             border-radius: 50%;
             transition: background 0.2s;
         }
-        
+
         .close-btn:hover {
             background: rgba(255,255,255,0.2);
         }
-        
+
         .statistics-bar {
             padding: 15px 30px;
             background: #f8f9fa;
@@ -974,25 +1018,25 @@ HTML_TEMPLATE = """
             gap: 20px;
             flex-shrink: 0;
         }
-        
+
         .stat-item {
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 5px;
         }
-        
+
         .stat-value {
             font-size: 1.5rem;
             font-weight: 700;
             color: #667eea;
         }
-        
+
         .stat-label {
             font-size: 0.9rem;
             color: #666;
         }
-        
+
         .modal-footer {
             padding: 20px 30px;
             border-top: 2px solid #e0e0e0;
@@ -1003,7 +1047,7 @@ HTML_TEMPLATE = """
             border-radius: 0 0 12px 12px;
             flex-shrink: 0;
         }
-        
+
         .action-buttons {
             display: flex;
             gap: 15px;
@@ -1034,9 +1078,9 @@ HTML_TEMPLATE = """
                 <form id="uploadForm" enctype="multipart/form-data">
                     <div class="upload-area" id="uploadArea">
                         <div class="upload-icon">📁</div>
-                        <div class="upload-text">Drag and drop your file here</div>
-                        <div class="upload-subtext">or click to select a file</div>
-                        <input type="file" id="fileInput" name="file" class="file-input" accept=".docx,.html,.htm,.txt">
+                        <div class="upload-text">Drag and drop your files here</div>
+                        <div class="upload-subtext">or click to select multiple files</div>
+                        <input type="file" id="fileInput" name="file" class="file-input" accept=".docx,.html,.htm,.txt" multiple>
                     </div>
 
                     <div class="supported-formats">
@@ -1045,12 +1089,12 @@ HTML_TEMPLATE = """
                     </div>
 
                     <div class="file-info" id="fileInfo">
-                        <h3>📄 File Information</h3>
-                        <div id="fileDetails"></div>
+                        <h3>📄 Selected Files</h3>
+                        <div class="file-list" id="fileList"></div>
                     </div>
 
                     <div class="processing-status" id="processingStatus">
-                        🔄 Processing your file...
+                        🔄 Processing your files...
                     </div>
 
                     <div class="progress" id="progressBar">
@@ -1063,11 +1107,11 @@ HTML_TEMPLATE = """
                         <button type="button" class="btn btn-secondary" id="previewBtn" disabled style="margin-right: 10px;" onclick="showPreview()">
                             Preview Changes
                         </button>
-                        <button type="submit" class="btn" id="processBtn" disabled>Blind File</button>
+                        <button type="submit" class="btn" id="processBtn" disabled>Blind Files</button>
                     </div>
                 </form>
             </div>
-            
+
             <!-- Keywords Tab -->
             <div class="tab-content" id="keywords">
                 <h2>🔤 Keyword Management</h2>
@@ -1150,7 +1194,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-    
+
     <footer style="text-align: center; padding: 30px 20px; margin-top: 20px;">
         <img src="/logo.svg" alt="Company Logo" style="max-width: 150px; max-height: 60px; height: auto; opacity: 0.8;">
     </footer>
@@ -1163,11 +1207,11 @@ HTML_TEMPLATE = """
                     <h2 id="previewTitle">Preview Changes</h2>
                     <button class="close-btn" onclick="closePreview()">&times;</button>
                 </div>
-    
+
                 <div class="statistics-bar" id="previewStats">
                     <!-- Statistics will be inserted here -->
                 </div>
-    
+
                 <div class="diff-container">
                     <div class="document-panel">
                         <div class="document-header">
@@ -1179,7 +1223,7 @@ HTML_TEMPLATE = """
                             </div>
                         </div>
                     </div>
-    
+
                     <div class="document-panel">
                         <div class="document-header">
                             <span>After Processing (Blinded)</span>
@@ -1191,7 +1235,7 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                 </div>
-    
+
                 <div class="modal-footer">
                     <div class="legend">
                         <div class="legend-item">
@@ -1205,14 +1249,14 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="action-buttons">
                         <button class="btn btn-secondary" onclick="closePreview()">Cancel</button>
-                        <button class="btn" onclick="proceedWithProcessing()">Looks Good - Process File</button>
+                        <button class="btn" onclick="proceedWithProcessing()">Looks Good - Process Files</button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
     <script>
-        let selectedFile = null;
+        let selectedFiles = [];
         let keywords = [];
         let previewData = null;
 
@@ -1222,9 +1266,9 @@ HTML_TEMPLATE = """
             setupForm();
             loadKeywords();
             const previewModal = document.getElementById('previewModal');
-    if (previewModal) {
-        previewModal.style.display = 'none';
-    }
+            if (previewModal) {
+                previewModal.style.display = 'none';
+            }
         });
 
         function initializeTabs() {
@@ -1273,42 +1317,70 @@ HTML_TEMPLATE = """
         }
 
         function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (!file) return;
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
 
             const supportedTypes = ['.docx', '.html', '.htm', '.txt'];
-            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+            const validFiles = [];
+            const invalidFiles = [];
 
-            if (!supportedTypes.includes(fileExtension)) {
-                showResults(`Unsupported file type: ${fileExtension}<br>Supported formats: DOCX, HTML, TXT`, 'error');
+            files.forEach(file => {
+                const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+                if (supportedTypes.includes(fileExtension)) {
+                    validFiles.push(file);
+                } else {
+                    invalidFiles.push(file.name);
+                }
+            });
+
+            if (invalidFiles.length > 0) {
+                showResults(`Some files were skipped (unsupported type): ${invalidFiles.join(', ')}<br>Supported formats: DOCX, HTML, TXT`, 'error');
+            }
+
+            if (validFiles.length === 0) {
                 return;
             }
 
-            selectedFile = file;
-            displayFileInfo(file);
+            selectedFiles = validFiles;
+            displayFileList(validFiles);
             document.getElementById('processBtn').disabled = false;
-            document.getElementById('previewBtn').disabled = false;
+            document.getElementById('previewBtn').disabled = validFiles.length !== 1; // Preview only works for single file
             hideResults();
         }
 
-        function displayFileInfo(file) {
+        function displayFileList(files) {
             const fileInfo = document.getElementById('fileInfo');
-            const fileDetails = document.getElementById('fileDetails');
+            const fileList = document.getElementById('fileList');
 
-            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
-            const fileSize = formatFileSize(file.size);
-            const fileType = getFileTypeDescription(fileExtension);
+            fileList.innerHTML = files.map((file, index) => {
+                const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+                const fileSize = formatFileSize(file.size);
 
-            fileDetails.innerHTML = `
-                <div class="info-grid">
-                    <div class="info-item"><strong>Name:</strong><br>${file.name}</div>
-                    <div class="info-item"><strong>Type:</strong><br>${fileType}</div>
-                    <div class="info-item"><strong>Size:</strong><br>${fileSize}</div>
-                    <div class="info-item"><strong>Last Modified:</strong><br>${new Date(file.lastModified).toLocaleDateString()}</div>
-                </div>
-            `;
+                return `
+                    <div class="file-list-item">
+                        <div>
+                            <div class="file-name">${escapeHtml(file.name)}</div>
+                            <div class="file-size">${fileSize}</div>
+                        </div>
+                        <button type="button" class="remove-file" onclick="removeFile(${index})">Remove</button>
+                    </div>
+                `;
+            }).join('');
 
             fileInfo.classList.add('show');
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            if (selectedFiles.length === 0) {
+                document.getElementById('fileInfo').classList.remove('show');
+                document.getElementById('processBtn').disabled = true;
+                document.getElementById('previewBtn').disabled = true;
+                document.getElementById('fileInput').value = '';
+            } else {
+                displayFileList(selectedFiles);
+                document.getElementById('previewBtn').disabled = selectedFiles.length !== 1;
+            }
         }
 
         function getFileTypeDescription(extension) {
@@ -1334,56 +1406,80 @@ HTML_TEMPLATE = """
             form.addEventListener('submit', async (e) => {
                 e.preventDefault();
 
-                if (!selectedFile) {
-                    showResults('Please select a file first.', 'error');
+                if (selectedFiles.length === 0) {
+                    showResults('Please select at least one file.', 'error');
                     return;
                 }
 
-                const formData = new FormData(form);
-
                 showProcessingStatus();
-                updateProgress(10);
+                let successCount = 0;
+                let errorCount = 0;
+                const errors = [];
 
-                try {
-                    const response = await fetch('/process', {
-                        method: 'POST',
-                        body: formData
-                    });
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    const file = selectedFiles[i];
+                    const progress = ((i + 1) / selectedFiles.length) * 100;
+                    updateProgress(progress);
 
-                    updateProgress(60);
+                    try {
+                        const formData = new FormData();
+                        formData.append('file', file);
 
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || 'Processing failed');
+                        // Add settings
+                        formData.append('processing_method', document.getElementById('processingMethod').value);
+                        formData.append('standardize_formatting', document.getElementById('standardizeFormatting').checked ? 'on' : 'off');
+                        formData.append('font_name', document.getElementById('fontName').value);
+                        formData.append('font_size', document.getElementById('fontSize').value);
+                        formData.append('font_color_black', document.getElementById('fontColorBlack').checked ? 'on' : 'off');
+                        formData.append('remove_shading', document.getElementById('removeShading').checked ? 'on' : 'off');
+
+                        const response = await fetch('/process', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.error || 'Processing failed');
+                        }
+
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+
+                        const contentDisposition = response.headers.get('Content-Disposition');
+                        const filename = contentDisposition 
+                            ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+                            : file.name.replace(/\.[^/.]+$/, '_blinded$&');
+
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+
+                        successCount++;
+
+                    } catch (error) {
+                        errorCount++;
+                        errors.push(`${file.name}: ${error.message}`);
                     }
-
-                    updateProgress(90);
-
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-
-                    const contentDisposition = response.headers.get('Content-Disposition');
-                    const filename = contentDisposition 
-                        ? contentDisposition.split('filename=')[1].replace(/"/g, '')
-                        : selectedFile.name.replace(/\.[^/.]+$/, '_blinded$&');
-
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    document.body.removeChild(a);
-
-                    updateProgress(100);
-                    showResults(`File processed successfully!<br>Download started: <strong>${filename}</strong>`, 'success');
-
-                } catch (error) {
-                    showResults(`Error processing file:<br>${error.message}`, 'error');
-                } finally {
-                    hideProcessingStatus();
-                    setTimeout(() => updateProgress(0), 2000);
                 }
+
+                updateProgress(100);
+
+                let message = '';
+                if (successCount > 0) {
+                    message += `✓ Successfully processed ${successCount} file(s)<br>`;
+                }
+                if (errorCount > 0) {
+                    message += `✗ Failed to process ${errorCount} file(s)<br>${errors.join('<br>')}`;
+                }
+
+                showResults(message, errorCount === 0 ? 'success' : 'error');
+                hideProcessingStatus();
+                setTimeout(() => updateProgress(0), 2000);
             });
         }
 
@@ -1563,57 +1659,67 @@ HTML_TEMPLATE = """
         }
 
         // PREVIEW FUNCTIONS
-        // PREVIEW FUNCTIONS
         async function showPreview() {
-            if (!selectedFile) {
+            if (selectedFiles.length === 0) {
                 showResults('Please select a file first.', 'error');
                 return;
             }
-        
-            const formData = new FormData(document.getElementById('uploadForm'));
-            
+
+            if (selectedFiles.length > 1) {
+                showResults('Preview only works for a single file. Please select one file to preview.', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', selectedFiles[0]);
+            formData.append('processing_method', document.getElementById('processingMethod').value);
+            formData.append('standardize_formatting', document.getElementById('standardizeFormatting').checked ? 'on' : 'off');
+            formData.append('font_name', document.getElementById('fontName').value);
+            formData.append('font_size', document.getElementById('fontSize').value);
+            formData.append('font_color_black', document.getElementById('fontColorBlack').checked ? 'on' : 'off');
+
             showProcessingStatus();
             updateProgress(10);
-        
+
             try {
                 updateProgress(30);
                 const response = await fetch('/preview', {
                     method: 'POST',
                     body: formData
                 });
-        
+
                 updateProgress(70);
-        
+
                 if (!response.ok) {
                     const errorData = await response.json();
                     throw new Error(errorData.error || 'Preview generation failed');
                 }
-        
+
                 previewData = await response.json();
                 console.log('Preview data received:', previewData);
-                
+
                 updateProgress(90);
-                
+
                 // Render preview BEFORE showing modal
                 renderPreview(previewData);
-                
+
                 updateProgress(95);
-                
+
                 // Small delay to ensure rendering is complete
                 await new Promise(resolve => setTimeout(resolve, 100));
-                
+
                 // Now show the modal - use BOTH display and class
                 const modal = document.getElementById('previewModal');
-                modal.style.display = 'block';  // Make it part of layout
+                modal.style.display = 'block';
                 setTimeout(() => {
-                    modal.classList.add('show');  // Then fade it in
+                    modal.classList.add('show');
                 }, 10);
                 document.body.style.overflow = 'hidden';
-                
+
                 console.log('Modal should now be visible');
-                
+
                 updateProgress(100);
-                
+
             } catch (error) {
                 console.error('Preview error:', error);
                 showResults(`Error generating preview: ${error.message}`, 'error');
@@ -1622,12 +1728,11 @@ HTML_TEMPLATE = """
                 setTimeout(() => updateProgress(0), 1000);
             }
         }
-        
+
         function closePreview() {
             console.log('Closing preview modal');
             const modal = document.getElementById('previewModal');
             modal.classList.remove('show');
-            // Wait for fade out animation before hiding completely
             setTimeout(() => {
                 modal.style.display = 'none';
             }, 200);
@@ -1636,9 +1741,9 @@ HTML_TEMPLATE = """
 
          function renderPreview(data) {
             console.log('Rendering preview with data:', data);
-            
+
             document.getElementById('previewTitle').textContent = `Preview Changes - ${data.filename}`;
-            
+
             const statsHtml = `
                 <div class="stat-item">
                     <span class="stat-value">${data.statistics.images_removed}</span>
@@ -1658,34 +1763,34 @@ HTML_TEMPLATE = """
                 </div>
             `;
             document.getElementById('previewStats').innerHTML = statsHtml;
-            
+
             console.log('Rendering original document...');
             renderDocument(data.original, data.diff, 'original', document.getElementById('originalDocContent'));
-            
+
             console.log('Rendering processed document...');
             renderDocument(data.processed, data.diff, 'processed', document.getElementById('processedDocContent'));
-            
+
             console.log('Setting up scroll sync...');
             setupSyncScroll();
-            
+
             console.log('Preview rendering complete');
         }
 
         function renderDocument(structure, diff, side, container) {
             const page = document.createElement('div');
             page.className = 'document-page';
-            
+
             structure.paragraphs.forEach((para, idx) => {
                 const paraDiv = document.createElement('div');
                 paraDiv.className = 'paragraph';
-                
+
                 const paraChange = diff.paragraph_changes.find(pc => pc.index === idx);
                 const imageChange = diff.image_changes.find(ic => ic.paragraph_index === idx);
-                
+
                 if (paraChange || imageChange) {
                     paraDiv.classList.add('has-change');
                 }
-                
+
                 if (para.has_image) {
                     const imageDiv = document.createElement('div');
                     imageDiv.className = side === 'original' ? 'image-block' : 'image-block removed';
@@ -1694,15 +1799,15 @@ HTML_TEMPLATE = """
                         : '<strong>Image Removed</strong><div style="margin-top: 8px;">This image will not appear in the processed document</div>';
                     page.appendChild(imageDiv);
                 }
-                
+
                 let textHtml = escapeHtml(para.text);
-                
+
                 if (paraChange) {
                     paraChange.changes.forEach(change => {
                         if (change.type === 'replace') {
                             const original = escapeHtml(change.original);
                             const processed = escapeHtml(change.processed);
-                            
+
                             if (side === 'original') {
                                 textHtml = textHtml.replace(
                                     original,
@@ -1717,7 +1822,7 @@ HTML_TEMPLATE = """
                         }
                     });
                 }
-                
+
                 if (para.style && para.style.includes('Heading')) {
                     const level = para.style.match(/\d+/);
                     if (level) {
@@ -1728,11 +1833,11 @@ HTML_TEMPLATE = """
                         return;
                     }
                 }
-                
+
                 paraDiv.innerHTML = textHtml;
                 page.appendChild(paraDiv);
             });
-            
+
             container.innerHTML = '';
             container.appendChild(page);
         }
@@ -1764,7 +1869,7 @@ HTML_TEMPLATE = """
             document.getElementById('uploadForm').dispatchEvent(new Event('submit'));
         }
     </script>
-    
+
 </body>
 </html>
 """
@@ -1924,6 +2029,7 @@ def status():
         'active_keywords': len([k for k in keywords if k.get('enabled', True)])
     })
 
+
 @app.route('/logo.svg')
 def serve_logo():
     """Serve the company logo"""
@@ -1933,6 +2039,8 @@ def serve_logo():
     else:
         # Return a placeholder if logo not found
         return '', 404
+
+
 def open_browser():
     """Open the default web browser after a short delay"""
     import time
@@ -1965,7 +2073,7 @@ def main():
     print("🛑 Press Ctrl+C to stop the server")
     print()
     print("Features available:")
-    print("  📁 Drag & drop file upload")
+    print("  📁 Drag & drop MULTIPLE file upload")
     print("  🔤 Keyword management with persistent storage")
     print("  🔧 Customizable processing settings")
     print("  📄 Support for DOCX, HTML, and TXT files")

@@ -980,6 +980,16 @@ class FileBlinder:
                         parent.remove(sdt)
                         sdts_removed += 1
 
+                # REMOVE ALL PARAGRAPH STYLES (force everything to Normal)
+                print("  Removing all paragraph styles (forcing to Normal)...")
+                styles_removed = 0
+                for para in root.findall('.//w:p', namespaces):
+                    for pPr in para.findall('.//w:pPr', namespaces):
+                        # Remove paragraph style references
+                        for pStyle in pPr.findall('.//w:pStyle', namespaces):
+                            pPr.remove(pStyle)
+                            styles_removed += 1
+
                 # Force ALL text to black color
                 print("  Forcing all text to black...")
                 colors_forced = 0
@@ -1025,6 +1035,7 @@ class FileBlinder:
                 tree.write(document_xml, encoding='utf-8', xml_declaration=True)
 
                 print(f"  ✓ Removed {sdts_removed} content controls")
+                print(f"  ✓ Removed {styles_removed} paragraph styles (forced to Normal)")
                 print(f"  ✓ Forced {colors_forced} text colors to black")
                 print(f"  ✓ Removed {shading_removed} shading elements")
                 print(f"  ✓ Removed {borders_removed} border elements")
@@ -1091,12 +1102,21 @@ class FileBlinder:
 
         images_removed = 0
         text_replacements = 0
+        styles_reset = 0
 
         # Process paragraphs
         print("Processing paragraphs...")
         for para_idx, paragraph in enumerate(doc.paragraphs):
             if para_idx % 10 == 0:
                 print(f"  Processing paragraph {para_idx + 1}/{len(doc.paragraphs)}")
+
+            # FORCE PARAGRAPH STYLE TO NORMAL (removes heading styles, etc.)
+            try:
+                if paragraph.style.name != 'Normal':
+                    paragraph.style = doc.styles['Normal']
+                    styles_reset += 1
+            except:
+                pass
 
             # Remove images
             try:
@@ -1156,6 +1176,14 @@ class FileBlinder:
                     self.remove_table_cell_shading(cell)
 
                     for paragraph in cell.paragraphs:
+                        # FORCE PARAGRAPH STYLE TO NORMAL in tables too
+                        try:
+                            if paragraph.style.name != 'Normal':
+                                paragraph.style = doc.styles['Normal']
+                                styles_reset += 1
+                        except:
+                            pass
+
                         # Remove images from table cells
                         try:
                             p_element = paragraph._element
@@ -1206,6 +1234,14 @@ class FileBlinder:
         for section in doc.sections:
             if section.header:
                 for paragraph in section.header.paragraphs:
+                    # FORCE PARAGRAPH STYLE TO NORMAL in headers
+                    try:
+                        if paragraph.style.name != 'Normal':
+                            paragraph.style = doc.styles['Normal']
+                            styles_reset += 1
+                    except:
+                        pass
+
                     try:
                         p_element = paragraph._element
 
@@ -1237,6 +1273,14 @@ class FileBlinder:
 
             if section.footer:
                 for paragraph in section.footer.paragraphs:
+                    # FORCE PARAGRAPH STYLE TO NORMAL in footers
+                    try:
+                        if paragraph.style.name != 'Normal':
+                            paragraph.style = doc.styles['Normal']
+                            styles_reset += 1
+                    except:
+                        pass
+
                     try:
                         p_element = paragraph._element
 
@@ -1279,6 +1323,7 @@ class FileBlinder:
         print("✅ PROCESSING COMPLETE")
         print(f"{'=' * 70}")
         print(f"✓ Removed {sdts_removed} content controls (blue sections)")
+        print(f"✓ Reset {styles_reset} paragraphs to Normal style (removed headings)")
         print(f"✓ Removed {images_removed} images/objects")
         print(f"✓ Made {text_replacements} text replacements")
         print(f"✓ Forced all text to black")

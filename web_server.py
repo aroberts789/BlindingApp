@@ -12,14 +12,21 @@ import webbrowser
 import threading
 import tempfile
 import traceback
+import zipfile
 from pathlib import Path
 from flask import Flask, render_template_string, request, jsonify, send_file
 from werkzeug.utils import secure_filename
-
+import hashlib
+import base64
+import io
 # Add the current directory to Python path so we can import file_blinder
 current_dir = Path(__file__).parent
 sys.path.insert(0, str(current_dir))
-
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 try:
     from file_blinder import FileBlinder
 
@@ -38,6 +45,7 @@ ALLOWED_EXTENSIONS = {'.docx', '.html', '.htm', '.txt'}
 
 # Keywords storage file
 KEYWORDS_FILE = current_dir / 'keywords.json'
+REMOVED_IMAGES_FILE = current_dir / 'removed_images.json'
 
 
 def allowed_file(filename):
@@ -94,6 +102,91 @@ def get_active_keywords():
     return {kw['original']: kw['replacement'] for kw in keywords if kw.get('enabled', True)}
 
 
+def load_removed_images():
+    """Load hashes of previously removed images"""
+    try:
+        if REMOVED_IMAGES_FILE.exists():
+            with open(REMOVED_IMAGES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('removed_hashes', [])
+        return []
+    except Exception as e:
+        print(f"Error loading removed images: {e}")
+        return []
+
+
+def save_removed_images(hashes):
+    """Save hashes of removed images"""
+    try:
+        data = {
+            'removed_hashes': list(set(hashes)),
+            'version': '1.0'
+        }
+        with open(REMOVED_IMAGES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving removed images: {e}")
+        return False
+
+
+def calculate_image_hash(image_data):
+    """Calculate SHA256 hash of image data"""
+    return hashlib.sha256(image_data).hexdigest()
+
+
+def extract_images_from_docx(file_path):
+    """Extract all images from a DOCX file with metadata"""
+    images = []
+    removed_hashes = load_removed_images()
+
+    try:
+        with zipfile.ZipFile(file_path, 'r') as docx_zip:
+            media_files = [f for f in docx_zip.namelist() if f.startswith('word/media/')]
+
+            for idx, media_file in enumerate(media_files):
+                try:
+                    image_data = docx_zip.read(media_file)
+                    image_hash = calculate_image_hash(image_data)
+                    file_ext = Path(media_file).suffix.lower()
+
+                    thumbnail_data = None
+                    width, height = None, None
+
+                    if PIL_AVAILABLE:
+                        try:
+                            img = Image.open(io.BytesIO(image_data))
+                            width, height = img.size
+                            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+
+                            thumb_buffer = io.BytesIO()
+                            img.save(thumb_buffer, format='PNG')
+                            thumb_buffer.seek(0)
+                            thumbnail_data = base64.b64encode(thumb_buffer.read()).decode('utf-8')
+                        except Exception as e:
+                            print(f"Error creating thumbnail: {e}")
+
+                    auto_remove = image_hash in removed_hashes
+
+                    images.append({
+                        'id': idx,
+                        'filename': Path(media_file).name,
+                        'hash': image_hash,
+                        'size': len(image_data),
+                        'format': file_ext.replace('.', '').upper(),
+                        'width': width,
+                        'height': height,
+                        'thumbnail': thumbnail_data,
+                        'auto_remove': auto_remove
+                    })
+                except Exception as e:
+                    print(f"Error processing image {media_file}: {e}")
+                    continue
+
+    except Exception as e:
+        print(f"Error extracting images: {e}")
+
+    return images
 @app.route('/preview', methods=['POST'])
 def preview_file():
     """Generate preview showing original vs processed document"""
@@ -769,46 +862,6 @@ HTML_TEMPLATE = """
             background: #c82333;
         }
 
-        @media (max-width: 768px) {
-            .container {
-                padding: 10px;
-            }
-
-            .header h1 {
-                font-size: 2rem;
-            }
-
-            .tab-content {
-                padding: 20px;
-            }
-
-            .settings-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .upload-area {
-                padding: 40px 15px;
-            }
-
-            .status-bar {
-                margin: -20px -20px 20px -20px;
-            }
-
-            .keyword-item {
-                grid-template-columns: 1fr;
-                gap: 10px;
-            }
-
-            .new-keyword-form {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-
-            .tabs {
-                flex-direction: column;
-            }
-        }
-
         /* Preview Modal Styles */
         #previewModal {
             display: none;
@@ -817,7 +870,7 @@ HTML_TEMPLATE = """
             left: 0;
             width: 100vw;
             height: 100vh;
-            z-index: 999999;
+            z-index: 999998;
         }
 
         #previewModal.show {
@@ -1052,6 +1105,269 @@ HTML_TEMPLATE = """
             display: flex;
             gap: 15px;
         }
+
+        /* ===== IMAGE SELECTION MODAL STYLES (NEW) ===== */
+        #imageSelectionModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 999999;
+            background: rgba(0,0,0,0.9);
+        }
+
+        #imageSelectionModal.show {
+            display: flex;
+        }
+
+        .image-modal-overlay {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .image-modal-content {
+            background: white;
+            border-radius: 12px;
+            width: 95%;
+            max-width: 1400px;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+
+        .image-modal-header {
+            padding: 20px 30px;
+            border-bottom: 2px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px 12px 0 0;
+        }
+
+        .image-modal-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .image-modal-header p {
+            margin: 5px 0 0 0;
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .image-modal-stats {
+            padding: 15px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .stat-badge {
+            background: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .stat-badge strong {
+            color: #667eea;
+        }
+
+        .image-modal-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px;
+            min-height: 0;
+        }
+
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .image-card {
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .image-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .image-card.selected {
+            border-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .image-card.auto-selected {
+            border-color: #ffc107;
+            background: #fffef5;
+        }
+
+        .image-thumbnail-container {
+            width: 100%;
+            height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f8f9fa;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .image-thumbnail {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .image-thumbnail-placeholder {
+            color: #999;
+            font-size: 3rem;
+        }
+
+        .image-info {
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .image-info-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 4px 0;
+        }
+
+        .image-checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .image-checkbox {
+            transform: scale(1.3);
+            cursor: pointer;
+        }
+
+        .auto-remove-badge {
+            background: #ffc107;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .image-modal-footer {
+            padding: 20px 30px;
+            border-top: 2px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8f9fa;
+            border-radius: 0 0 12px 12px;
+        }
+
+        .bulk-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .proceed-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .no-images-message {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .no-images-message .icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .tab-content {
+                padding: 20px;
+            }
+
+            .settings-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .upload-area {
+                padding: 40px 15px;
+            }
+
+            .status-bar {
+                margin: -20px -20px 20px -20px;
+            }
+
+            .keyword-item {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .new-keyword-form {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .tabs {
+                flex-direction: column;
+            }
+
+            .image-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .bulk-actions,
+            .proceed-actions {
+                width: 100%;
+            }
+
+            .image-modal-footer {
+                flex-direction: column;
+                gap: 15px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1064,7 +1380,7 @@ HTML_TEMPLATE = """
         <div class="main-content">
             <div class="status-bar">
                 <span>Local Web Server</span>
-                <span class="version">v1.1</span>
+                <span class="version">v1.2 - Enhanced</span>
             </div>
 
             <div class="tabs">
@@ -1107,7 +1423,7 @@ HTML_TEMPLATE = """
                         <button type="button" class="btn btn-secondary" id="previewBtn" disabled style="margin-right: 10px;" onclick="showPreview()">
                             Preview Changes
                         </button>
-                        <button type="submit" class="btn" id="processBtn" disabled>Blind Files</button>
+                        <button type="button" class="btn" id="processBtn" disabled>Blind Files</button>
                     </div>
                 </form>
             </div>
@@ -1199,7 +1515,7 @@ HTML_TEMPLATE = """
         <img src="/logo.svg" alt="Company Logo" style="max-width: 150px; max-height: 60px; height: auto; opacity: 0.8;">
     </footer>
 
-    <!-- Preview Modal - MUST BE AT END OF BODY, OUTSIDE ALL OTHER CONTAINERS -->
+    <!-- Preview Modal -->
     <div id="previewModal">
         <div class="modal-overlay">
             <div class="modal">
@@ -1255,10 +1571,59 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
+
+    <!-- IMAGE SELECTION MODAL (NEW) -->
+    <div id="imageSelectionModal">
+        <div class="image-modal-overlay">
+            <div class="image-modal-content">
+                <div class="image-modal-header">
+                    <div>
+                        <h2>Select Images to Remove</h2>
+                        <p>Choose which images to remove from <span id="imageModalFilename"></span></p>
+                    </div>
+                    <button class="close-btn" onclick="closeImageSelectionModal()">&times;</button>
+                </div>
+
+                <div class="image-modal-stats">
+                    <div class="stat-badge">
+                        Total Images: <strong id="totalImagesCount">0</strong>
+                    </div>
+                    <div class="stat-badge">
+                        Selected for Removal: <strong id="selectedImagesCount">0</strong>
+                    </div>
+                    <div class="stat-badge">
+                        Auto-Selected (Previously Removed): <strong id="autoSelectedCount">0</strong>
+                    </div>
+                </div>
+
+                <div class="image-modal-body" id="imageModalBody">
+                    <div class="image-grid" id="imageGrid">
+                        <!-- Images will be loaded here -->
+                    </div>
+                </div>
+
+                <div class="image-modal-footer">
+                    <div class="bulk-actions">
+                        <button class="btn btn-secondary btn-small" onclick="selectAllImages()">Select All</button>
+                        <button class="btn btn-secondary btn-small" onclick="deselectAllImages()">Deselect All</button>
+                        <button class="btn btn-secondary btn-small" onclick="selectOnlyAuto()">Select Only Auto</button>
+                    </div>
+                    <div class="proceed-actions">
+                        <button class="btn btn-secondary" onclick="closeImageSelectionModal()">Cancel</button>
+                        <button class="btn" onclick="proceedWithImageSelection()">Proceed with Blinding</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let selectedFiles = [];
         let keywords = [];
         let previewData = null;
+        // NEW: Image selection variables
+        let currentImages = [];
+        let selectedImageHashes = new Set();
 
         document.addEventListener('DOMContentLoaded', function() {
             initializeTabs();
@@ -1268,6 +1633,10 @@ HTML_TEMPLATE = """
             const previewModal = document.getElementById('previewModal');
             if (previewModal) {
                 previewModal.style.display = 'none';
+            }
+            const imageModal = document.getElementById('imageSelectionModal');
+            if (imageModal) {
+                imageModal.style.display = 'none';
             }
         });
 
@@ -1344,7 +1713,7 @@ HTML_TEMPLATE = """
             selectedFiles = validFiles;
             displayFileList(validFiles);
             document.getElementById('processBtn').disabled = false;
-            document.getElementById('previewBtn').disabled = validFiles.length !== 1; // Preview only works for single file
+            document.getElementById('previewBtn').disabled = validFiles.length !== 1;
             hideResults();
         }
 
@@ -1353,9 +1722,7 @@ HTML_TEMPLATE = """
             const fileList = document.getElementById('fileList');
 
             fileList.innerHTML = files.map((file, index) => {
-                const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
                 const fileSize = formatFileSize(file.size);
-
                 return `
                     <div class="file-list-item">
                         <div>
@@ -1383,16 +1750,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        function getFileTypeDescription(extension) {
-            switch(extension) {
-                case '.docx': return 'Microsoft Word Document';
-                case '.html':
-                case '.htm': return 'HTML Document';
-                case '.txt': return 'Plain Text File';
-                default: return 'Unknown';
-            }
-        }
-
         function formatFileSize(bytes) {
             if (bytes === 0) return '0 Bytes';
             const k = 1024;
@@ -1403,87 +1760,376 @@ HTML_TEMPLATE = """
 
         function setupForm() {
             const form = document.getElementById('uploadForm');
-            form.addEventListener('submit', async (e) => {
+            const processBtn = document.getElementById('processBtn');
+            
+            // MODIFIED: Override button click to show image selection first
+            processBtn.addEventListener('click', async (e) => {
                 e.preventDefault();
-
+                
                 if (selectedFiles.length === 0) {
                     showResults('Please select at least one file.', 'error');
                     return;
                 }
-
-                showProcessingStatus();
-                let successCount = 0;
-                let errorCount = 0;
-                const errors = [];
-
-                for (let i = 0; i < selectedFiles.length; i++) {
-                    const file = selectedFiles[i];
-                    const progress = ((i + 1) / selectedFiles.length) * 100;
-                    updateProgress(progress);
-
-                    try {
-                        const formData = new FormData();
-                        formData.append('file', file);
-
-                        // Add settings
-                        formData.append('processing_method', document.getElementById('processingMethod').value);
-                        formData.append('standardize_formatting', document.getElementById('standardizeFormatting').checked ? 'on' : 'off');
-                        formData.append('font_name', document.getElementById('fontName').value);
-                        formData.append('font_size', document.getElementById('fontSize').value);
-                        formData.append('font_color_black', document.getElementById('fontColorBlack').checked ? 'on' : 'off');
-                        formData.append('remove_shading', document.getElementById('removeShading').checked ? 'on' : 'off');
-
-                        const response = await fetch('/process', {
-                            method: 'POST',
-                            body: formData
-                        });
-
-                        if (!response.ok) {
-                            const errorData = await response.json();
-                            throw new Error(errorData.error || 'Processing failed');
-                        }
-
-                        const blob = await response.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-
-                        const contentDisposition = response.headers.get('Content-Disposition');
-                        const filename = contentDisposition 
-                            ? contentDisposition.split('filename=')[1].replace(/"/g, '')
-                            : file.name.replace(/\.[^/.]+$/, '_blinded$&');
-
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        window.URL.revokeObjectURL(url);
-                        document.body.removeChild(a);
-
-                        successCount++;
-
-                    } catch (error) {
-                        errorCount++;
-                        errors.push(`${file.name}: ${error.message}`);
+                
+                // Check if DOCX file - if so, show image selection
+                const hasDOCX = selectedFiles.some(f => f.name.toLowerCase().endsWith('.docx'));
+                
+                if (hasDOCX && selectedFiles.length === 1) {
+                    // Show image selection modal for single DOCX
+                    showImageSelectionModal();
+                } else if (selectedFiles.length > 1 && hasDOCX) {
+                    // Multiple files - ask if user wants to process directly or select one for image selection
+                    if (confirm('You have selected multiple files. Image selection is only available for a single file. Process all files without image selection?')) {
+                        processFilesDirectly();
                     }
+                } else {
+                    // No DOCX or non-DOCX files - process directly
+                    processFilesDirectly();
                 }
-
-                updateProgress(100);
-
-                let message = '';
-                if (successCount > 0) {
-                    message += `✓ Successfully processed ${successCount} file(s)<br>`;
-                }
-                if (errorCount > 0) {
-                    message += `✗ Failed to process ${errorCount} file(s)<br>${errors.join('<br>')}`;
-                }
-
-                showResults(message, errorCount === 0 ? 'success' : 'error');
-                hideProcessingStatus();
-                setTimeout(() => updateProgress(0), 2000);
             });
         }
 
-        // Keyword Management Functions
+        async function processFilesDirectly() {
+            showProcessingStatus();
+            let successCount = 0;
+            let errorCount = 0;
+            const errors = [];
+
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                const progress = ((i + 1) / selectedFiles.length) * 100;
+                updateProgress(progress);
+
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('processing_method', document.getElementById('processingMethod').value);
+                    formData.append('standardize_formatting', document.getElementById('standardizeFormatting').checked ? 'on' : 'off');
+                    formData.append('font_name', document.getElementById('fontName').value);
+                    formData.append('font_size', document.getElementById('fontSize').value);
+                    formData.append('font_color_black', document.getElementById('fontColorBlack').checked ? 'on' : 'off');
+                    formData.append('remove_shading', document.getElementById('removeShading').checked ? 'on' : 'off');
+
+                    const response = await fetch('/process', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Processing failed');
+                    }
+
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+
+                    const contentDisposition = response.headers.get('Content-Disposition');
+                    const filename = contentDisposition 
+                        ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+                        : file.name.replace(/\.[^/.]+$/, '_blinded$&');
+
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+
+                    successCount++;
+
+                } catch (error) {
+                    errorCount++;
+                    errors.push(`${file.name}: ${error.message}`);
+                }
+            }
+
+            updateProgress(100);
+
+            let message = '';
+            if (successCount > 0) {
+                message += `✓ Successfully processed ${successCount} file(s)<br>`;
+            }
+            if (errorCount > 0) {
+                message += `✗ Failed to process ${errorCount} file(s)<br>${errors.join('<br>')}`;
+            }
+
+            showResults(message, errorCount === 0 ? 'success' : 'error');
+            hideProcessingStatus();
+            setTimeout(() => updateProgress(0), 2000);
+        }
+
+        // ===== IMAGE SELECTION FUNCTIONS (NEW) =====
+
+        async function showImageSelectionModal() {
+            if (selectedFiles.length === 0) {
+                showResults('Please select a file first.', 'error');
+                return;
+            }
+
+            const file = selectedFiles[0];
+            const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+
+            if (fileExtension !== '.docx') {
+                showResults('Image selection is only available for DOCX files.', 'error');
+                processFilesDirectly();
+                return;
+            }
+
+            showProcessingStatus();
+            updateProgress(10);
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                updateProgress(30);
+                const response = await fetch('/extract_images', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                updateProgress(70);
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to extract images');
+                }
+
+                const data = await response.json();
+                currentImages = data.images;
+
+                updateProgress(90);
+
+                renderImageGrid(data);
+
+                document.getElementById('imageModalFilename').textContent = data.filename;
+                const modal = document.getElementById('imageSelectionModal');
+                modal.style.display = 'flex';
+                setTimeout(() => {
+                    modal.classList.add('show');
+                }, 10);
+                document.body.style.overflow = 'hidden';
+
+                updateProgress(100);
+            } catch (error) {
+                console.error('Image extraction error:', error);
+                showResults(`Error extracting images: ${error.message}. Processing without image selection.`, 'error');
+                processFilesDirectly();
+            } finally {
+                hideProcessingStatus();
+                setTimeout(() => updateProgress(0), 1000);
+            }
+        }
+
+        function renderImageGrid(data) {
+            const grid = document.getElementById('imageGrid');
+            selectedImageHashes.clear();
+
+            if (data.images.length === 0) {
+                grid.innerHTML = `
+                    <div class="no-images-message">
+                        <div class="icon">📄</div>
+                        <h3>No Images Found</h3>
+                        <p>This document doesn't contain any images.</p>
+                        <button class="btn" onclick="proceedWithImageSelection()">Proceed Anyway</button>
+                    </div>
+                `;
+                return;
+            }
+
+            grid.innerHTML = data.images.map(img => {
+                if (img.auto_remove) {
+                    selectedImageHashes.add(img.hash);
+                }
+
+                const thumbnailHtml = img.thumbnail
+                    ? `<img src="data:image/png;base64,${img.thumbnail}" class="image-thumbnail" alt="${img.filename}">`
+                    : `<div class="image-thumbnail-placeholder">🖼️</div>`;
+
+                const dimensionsText = img.width && img.height
+                    ? `${img.width} × ${img.height} px`
+                    : 'Unknown';
+
+                return `
+                    <div class="image-card ${img.auto_remove ? 'auto-selected selected' : ''}" 
+                         data-hash="${img.hash}" 
+                         onclick="toggleImageSelection('${img.hash}')">
+                        <div class="image-thumbnail-container">
+                            ${thumbnailHtml}
+                        </div>
+                        <div class="image-info">
+                            <div class="image-info-row">
+                                <strong>${escapeHtml(img.filename)}</strong>
+                            </div>
+                            <div class="image-info-row">
+                                <span>Format: ${img.format}</span>
+                                <span>Size: ${formatFileSize(img.size)}</span>
+                            </div>
+                            <div class="image-info-row">
+                                <span>Dimensions: ${dimensionsText}</span>
+                            </div>
+                        </div>
+                        <div class="image-checkbox-container">
+                            <input type="checkbox" class="image-checkbox" 
+                                   ${img.auto_remove ? 'checked' : ''} 
+                                   onclick="event.stopPropagation(); toggleImageSelection('${img.hash}')">
+                            <label>Remove this image</label>
+                            ${img.auto_remove ? '<span class="auto-remove-badge">AUTO</span>' : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            updateImageStats();
+        }
+
+        function toggleImageSelection(hash) {
+            const card = document.querySelector(`[data-hash="${hash}"]`);
+            const checkbox = card.querySelector('.image-checkbox');
+
+            if (selectedImageHashes.has(hash)) {
+                selectedImageHashes.delete(hash);
+                card.classList.remove('selected');
+                checkbox.checked = false;
+            } else {
+                selectedImageHashes.add(hash);
+                card.classList.add('selected');
+                checkbox.checked = true;
+            }
+
+            updateImageStats();
+        }
+
+        function selectAllImages() {
+            currentImages.forEach(img => {
+                selectedImageHashes.add(img.hash);
+                const card = document.querySelector(`[data-hash="${img.hash}"]`);
+                const checkbox = card?.querySelector('.image-checkbox');
+                if (card) card.classList.add('selected');
+                if (checkbox) checkbox.checked = true;
+            });
+            updateImageStats();
+        }
+
+        function deselectAllImages() {
+            selectedImageHashes.clear();
+            document.querySelectorAll('.image-card').forEach(card => {
+                card.classList.remove('selected');
+                const checkbox = card.querySelector('.image-checkbox');
+                if (checkbox) checkbox.checked = false;
+            });
+            updateImageStats();
+        }
+
+        function selectOnlyAuto() {
+            deselectAllImages();
+            currentImages.forEach(img => {
+                if (img.auto_remove) {
+                    selectedImageHashes.add(img.hash);
+                    const card = document.querySelector(`[data-hash="${img.hash}"]`);
+                    const checkbox = card?.querySelector('.image-checkbox');
+                    if (card) card.classList.add('selected');
+                    if (checkbox) checkbox.checked = true;
+                }
+            });
+            updateImageStats();
+        }
+
+        function updateImageStats() {
+            document.getElementById('totalImagesCount').textContent = currentImages.length;
+            document.getElementById('selectedImagesCount').textContent = selectedImageHashes.size;
+            
+            const autoCount = currentImages.filter(img => img.auto_remove).length;
+            document.getElementById('autoSelectedCount').textContent = autoCount;
+        }
+
+        function closeImageSelectionModal() {
+            const modal = document.getElementById('imageSelectionModal');
+            modal.classList.remove('show');
+            setTimeout(() => {
+                modal.style.display = 'none';
+            }, 200);
+            document.body.style.overflow = 'auto';
+        }
+
+        async function proceedWithImageSelection() {
+            // Save the selected hashes for future auto-selection
+            if (selectedImageHashes.size > 0) {
+                try {
+                    await fetch('/save_image_preferences', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            removed_hashes: Array.from(selectedImageHashes)
+                        })
+                    });
+                } catch (error) {
+                    console.error('Error saving image preferences:', error);
+                }
+            }
+
+            closeImageSelectionModal();
+            processFilesWithImageSelection(Array.from(selectedImageHashes));
+        }
+
+        async function processFilesWithImageSelection(imageHashesToRemove) {
+            showProcessingStatus();
+            
+            const formData = new FormData();
+            formData.append('file', selectedFiles[0]);
+            formData.append('image_hashes_to_remove', JSON.stringify(imageHashesToRemove));
+            formData.append('processing_method', document.getElementById('processingMethod').value);
+            formData.append('standardize_formatting', document.getElementById('standardizeFormatting').checked ? 'on' : 'off');
+            formData.append('font_name', document.getElementById('fontName').value);
+            formData.append('font_size', document.getElementById('fontSize').value);
+            formData.append('font_color_black', document.getElementById('fontColorBlack').checked ? 'on' : 'off');
+            formData.append('remove_shading', document.getElementById('removeShading').checked ? 'on' : 'off');
+            
+            try {
+                updateProgress(30);
+                const response = await fetch('/process', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                updateProgress(70);
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Processing failed');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                
+                const contentDisposition = response.headers.get('Content-Disposition');
+                const filename = contentDisposition 
+                    ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+                    : selectedFiles[0].name.replace(/\.[^/.]+$/, '_blinded$&');
+                
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                updateProgress(100);
+                showResults('✓ File processed successfully!', 'success');
+            } catch (error) {
+                showResults(`✗ Processing error: ${error.message}`, 'error');
+            } finally {
+                hideProcessingStatus();
+                setTimeout(() => updateProgress(0), 1000);
+            }
+        }
+
+        // ===== KEYWORD MANAGEMENT FUNCTIONS =====
+
         async function loadKeywords() {
             try {
                 const response = await fetch('/keywords');
@@ -1627,38 +2273,8 @@ HTML_TEMPLATE = """
             URL.revokeObjectURL(url);
         }
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
+        // ===== PREVIEW FUNCTIONS =====
 
-        function showProcessingStatus() {
-            document.getElementById('processingStatus').classList.add('show');
-            document.getElementById('progressBar').classList.add('show');
-            document.getElementById('processBtn').disabled = true;
-        }
-
-        function hideProcessingStatus() {
-            document.getElementById('processingStatus').classList.remove('show');
-            document.getElementById('processBtn').disabled = false;
-        }
-
-        function updateProgress(percent) {
-            document.getElementById('progressFill').style.width = percent + '%';
-        }
-
-        function showResults(message, type = 'success') {
-            const results = document.getElementById('results');
-            results.innerHTML = message;
-            results.className = `results show ${type}`;
-        }
-
-        function hideResults() {
-            document.getElementById('results').classList.remove('show');
-        }
-
-        // PREVIEW FUNCTIONS
         async function showPreview() {
             if (selectedFiles.length === 0) {
                 showResults('Please select a file first.', 'error');
@@ -1696,27 +2312,19 @@ HTML_TEMPLATE = """
                 }
 
                 previewData = await response.json();
-                console.log('Preview data received:', previewData);
 
                 updateProgress(90);
-
-                // Render preview BEFORE showing modal
                 renderPreview(previewData);
-
                 updateProgress(95);
 
-                // Small delay to ensure rendering is complete
                 await new Promise(resolve => setTimeout(resolve, 100));
 
-                // Now show the modal - use BOTH display and class
                 const modal = document.getElementById('previewModal');
                 modal.style.display = 'block';
                 setTimeout(() => {
                     modal.classList.add('show');
                 }, 10);
                 document.body.style.overflow = 'hidden';
-
-                console.log('Modal should now be visible');
 
                 updateProgress(100);
 
@@ -1730,7 +2338,6 @@ HTML_TEMPLATE = """
         }
 
         function closePreview() {
-            console.log('Closing preview modal');
             const modal = document.getElementById('previewModal');
             modal.classList.remove('show');
             setTimeout(() => {
@@ -1739,9 +2346,7 @@ HTML_TEMPLATE = """
             document.body.style.overflow = 'auto';
         }
 
-         function renderPreview(data) {
-            console.log('Rendering preview with data:', data);
-
+        function renderPreview(data) {
             document.getElementById('previewTitle').textContent = `Preview Changes - ${data.filename}`;
 
             const statsHtml = `
@@ -1764,16 +2369,9 @@ HTML_TEMPLATE = """
             `;
             document.getElementById('previewStats').innerHTML = statsHtml;
 
-            console.log('Rendering original document...');
             renderDocument(data.original, data.diff, 'original', document.getElementById('originalDocContent'));
-
-            console.log('Rendering processed document...');
             renderDocument(data.processed, data.diff, 'processed', document.getElementById('processedDocContent'));
-
-            console.log('Setting up scroll sync...');
             setupSyncScroll();
-
-            console.log('Preview rendering complete');
         }
 
         function renderDocument(structure, diff, side, container) {
@@ -1866,10 +2464,42 @@ HTML_TEMPLATE = """
 
         function proceedWithProcessing() {
             closePreview();
-            document.getElementById('uploadForm').dispatchEvent(new Event('submit'));
+            document.getElementById('processBtn').click();
+        }
+
+        // ===== UTILITY FUNCTIONS =====
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showProcessingStatus() {
+            document.getElementById('processingStatus').classList.add('show');
+            document.getElementById('progressBar').classList.add('show');
+            document.getElementById('processBtn').disabled = true;
+        }
+
+        function hideProcessingStatus() {
+            document.getElementById('processingStatus').classList.remove('show');
+            document.getElementById('processBtn').disabled = false;
+        }
+
+        function updateProgress(percent) {
+            document.getElementById('progressFill').style.width = percent + '%';
+        }
+
+        function showResults(message, type = 'success') {
+            const results = document.getElementById('results');
+            results.innerHTML = message;
+            results.className = `results show ${type}`;
+        }
+
+        function hideResults() {
+            document.getElementById('results').classList.remove('show');
         }
     </script>
-
 </body>
 </html>
 """
@@ -1926,7 +2556,7 @@ def reset_keywords():
 
 @app.route('/process', methods=['POST'])
 def process_file():
-    """Process the uploaded file"""
+    """Process the uploaded file with selective image removal"""
     if not FILEBLINDER_AVAILABLE:
         return jsonify(
             {'error': 'FileBlinder module not available. Please ensure file_blinder.py is in the same directory.'}), 500
@@ -1958,6 +2588,15 @@ def process_file():
         font_color_black = request.form.get('font_color_black') == 'on'
         remove_shading = request.form.get('remove_shading') == 'on'
 
+        # NEW: Get image hashes to remove (if provided)
+        image_hashes_json = request.form.get('image_hashes_to_remove', '[]')
+        try:
+            image_hashes_to_remove = json.loads(image_hashes_json)
+            print(f"Received {len(image_hashes_to_remove)} image hashes to remove")
+        except json.JSONDecodeError:
+            print("No valid image hashes provided, will remove all images")
+            image_hashes_to_remove = []
+
         # Create temporary files
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_input:
             file.save(tmp_input.name)
@@ -1975,9 +2614,10 @@ def process_file():
             # Get active keywords from persistent storage
             active_keywords = get_active_keywords()
 
-            # Initialize FileBlinder with current keywords
+            # Initialize FileBlinder with current keywords AND image hashes
             blinder = FileBlinder(
                 keyword_replacements=active_keywords,
+                image_hashes_to_remove=image_hashes_to_remove,  # NEW: Pass image hashes
                 standardize_formatting=standardize_formatting,
                 font_name=font_name,
                 font_size=font_size,
@@ -2017,6 +2657,66 @@ def process_file():
         return jsonify({'error': f'Processing error: {str(e)}'}), 500
 
 
+@app.route('/extract_images', methods=['POST'])
+def extract_images():
+    """Extract images from uploaded file for selection"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        filename = secure_filename(file.filename)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_file:
+            file.save(tmp_file.name)
+            temp_path = tmp_file.name
+
+        try:
+            extension = Path(filename).suffix.lower()
+
+            if extension == '.docx':
+                images = extract_images_from_docx(temp_path)
+            else:
+                return jsonify({'error': 'Image extraction only supported for DOCX files'}), 400
+
+            return jsonify({
+                'filename': filename,
+                'images': images,
+                'total_images': len(images),
+                'auto_remove_count': sum(1 for img in images if img['auto_remove'])
+            })
+
+        finally:
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+    except Exception as e:
+        print(f"Error extracting images: {e}")
+        traceback.print_exc()
+        return jsonify({'error': f'Image extraction error: {str(e)}'}), 500
+
+
+@app.route('/save_image_preferences', methods=['POST'])
+def save_image_preferences():
+    """Save user's image removal preferences"""
+    try:
+        data = request.get_json()
+        removed_hashes = data.get('removed_hashes', [])
+
+        current_hashes = load_removed_images()
+        updated_hashes = list(set(current_hashes + removed_hashes))
+        save_removed_images(updated_hashes)
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        print(f"Error saving image preferences: {e}")
+        return jsonify({'error': str(e)}), 500
 @app.route('/status')
 def status():
     """Simple status endpoint"""

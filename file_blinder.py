@@ -12,6 +12,7 @@ from pathlib import Path
 import zipfile
 import tempfile
 from xml.etree import ElementTree as ET
+import hashlib
 
 try:
     from docx import Document
@@ -29,8 +30,8 @@ except ImportError:
 
 
 class FileBlinder:
-    def __init__(self, keyword_replacements=None, standardize_formatting=True, font_name="Calibri", font_size=11,
-                 font_color_black=True, grey_shading=False):
+    def __init__(self, keyword_replacements=None, image_hashes_to_remove=None, standardize_formatting=True,
+                 font_name="Calibri", font_size=11, font_color_black=True, grey_shading=False):
         """
         Initialize with keyword replacement dictionary and formatting options
 
@@ -42,6 +43,7 @@ class FileBlinder:
             font_color_black (bool): Whether to make all text black
             grey_shading (bool): Whether to add grey shading to text
         """
+        self.image_hashes_to_remove = set(image_hashes_to_remove or [])
         self.keyword_replacements = keyword_replacements or {
             "confidential": "[REDACTED]",
             "secret": "[REDACTED]",
@@ -60,6 +62,18 @@ class FileBlinder:
         self.font_color_black = font_color_black
         self.grey_shading = grey_shading
 
+    def calculate_image_hash(self, image_data):
+        """Calculate SHA256 hash of image data"""
+        import hashlib
+        return hashlib.sha256(image_data).hexdigest()
+
+    def should_remove_image(self, image_data):
+        """Check if an image should be removed based on its hash"""
+        if not self.image_hashes_to_remove:
+            return True  # Backward compatibility: remove all if no selection
+
+        image_hash = self.calculate_image_hash(image_data)
+        return image_hash in self.image_hashes_to_remove
     def extract_document_structure(self, input_path):
         """Extract document content with metadata for diff generation"""
         extension = Path(input_path).suffix.lower()
@@ -1850,6 +1864,433 @@ class FileBlinder:
 
         return output_path
 
+    def process_docx_selective(self, input_path, output_path):
+        """
+        Process DOCX with selective image removal AND complete formatting standardization.
+        Includes processing of headers/footers for image removal.
+        """
+        print("=" * 70)
+        print("SELECTIVE MODE - Image Selection + Complete Formatting Cleanup")
+        print("=" * 70)
+        print()
+
+        if self.image_hashes_to_remove:
+            print(f"Will remove {len(self.image_hashes_to_remove)} selected images")
+        else:
+            print("Will remove ALL images (no selection provided)")
+        print()
+
+        # PHASE 1: XML-level preprocessing
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir = Path(temp_dir)
+
+            print("Phase 1: Pre-processing at XML level...")
+            with zipfile.ZipFile(input_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+
+            namespaces = {
+                'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+            }
+
+            for prefix, uri in namespaces.items():
+                ET.register_namespace(prefix, uri)
+
+            # Build image hash map for selective removal
+            print("  Analyzing images...")
+            media_dir = temp_dir / 'word' / 'media'
+            image_hash_map = {}
+            images_to_remove = set()
+
+            if media_dir.exists():
+                for media_file in media_dir.iterdir():
+                    if media_file.is_file():
+                        try:
+                            with open(media_file, 'rb') as f:
+                                image_data = f.read()
+                                image_hash = self.calculate_image_hash(image_data)
+                                image_hash_map[media_file.name] = image_hash
+
+                                if self.should_remove_image(image_data):
+                                    images_to_remove.add(media_file.name)
+                                    print(f"    ✓ Marked for removal: {media_file.name}")
+                                else:
+                                    print(f"    ○ Keeping: {media_file.name}")
+                        except Exception as e:
+                            print(f"    ✗ Error: {e}")
+
+            print(f"  Total images to remove: {len(images_to_remove)}\n")
+
+            # Get ALL relationship IDs for images to remove (from all rels files)
+            print("  Processing relationships...")
+            rel_ids_to_remove = set()
+
+            # Process main document relationships
+            rels_file = temp_dir / 'word' / '_rels' / 'document.xml.rels'
+            if rels_file.exists():
+                tree = ET.parse(rels_file)
+                root = tree.getroot()
+                for rel in root.findall(
+                        './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
+                    target = rel.get('Target')
+                    if target and 'media/' in target:
+                        filename = Path(target).name
+                        if filename in images_to_remove:
+                            rel_id = rel.get('Id')
+                            rel_ids_to_remove.add(rel_id)
+                            print(f"    Found in document.xml.rels: {filename} -> {rel_id}")
+
+            # Process header/footer relationships
+            rels_dir = temp_dir / 'word' / '_rels'
+            if rels_dir.exists():
+                for rels_file in rels_dir.glob('*.xml.rels'):
+                    if rels_file.name == 'document.xml.rels':
+                        continue  # Already processed
+
+                    try:
+                        tree = ET.parse(rels_file)
+                        root = tree.getroot()
+                        for rel in root.findall(
+                                './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
+                            target = rel.get('Target')
+                            if target and 'media/' in target:
+                                filename = Path(target).name
+                                if filename in images_to_remove:
+                                    rel_id = rel.get('Id')
+                                    rel_ids_to_remove.add(rel_id)
+                                    print(f"    Found in {rels_file.name}: {filename} -> {rel_id}")
+                    except Exception as e:
+                        print(f"    Warning: Could not process {rels_file.name}: {e}")
+
+            print(f"  Total relationship IDs to remove: {len(rel_ids_to_remove)}\n")
+
+            # Helper function to remove images from an XML file
+            def remove_images_from_xml(xml_path, xml_name):
+                """Remove drawing references from any XML file"""
+                if not xml_path.exists():
+                    return 0
+
+                try:
+                    tree = ET.parse(xml_path)
+                    root = tree.getroot()
+                    parent_map = {c: p for p in tree.iter() for c in p}
+
+                    drawings_to_remove = []
+                    for drawing in root.findall('.//w:drawing', namespaces):
+                        should_remove = False
+                        for blip in drawing.iter():
+                            if 'blip' in str(blip.tag).lower():
+                                embed_attr = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+                                if embed_attr in blip.attrib:
+                                    rel_id = blip.attrib[embed_attr]
+                                    if rel_id in rel_ids_to_remove:
+                                        should_remove = True
+                                        break
+                        if should_remove:
+                            drawings_to_remove.append(drawing)
+
+                    for drawing in drawings_to_remove:
+                        parent = parent_map.get(drawing)
+                        if parent is not None:
+                            parent.remove(drawing)
+
+                    if drawings_to_remove:
+                        tree.write(xml_path, encoding='utf-8', xml_declaration=True)
+                        print(f"    ✓ Removed {len(drawings_to_remove)} images from {xml_name}")
+
+                    return len(drawings_to_remove)
+                except Exception as e:
+                    print(f"    ✗ Error processing {xml_name}: {e}")
+                    return 0
+
+            # Process document.xml - COMPREHENSIVE CLEANUP
+            document_xml = temp_dir / 'word' / 'document.xml'
+            sdts_removed = 0
+            styles_removed = 0
+            colors_forced = 0
+            shading_removed = 0
+            borders_removed = 0
+            images_removed = 0
+            text_replacements = 0
+
+            if document_xml.exists():
+                print("  Processing document.xml...")
+                tree = ET.parse(document_xml)
+                root = tree.getroot()
+                parent_map = {c: p for p in tree.iter() for c in p}
+
+                # 1. REMOVE CONTENT CONTROLS (blue boxes)
+                for sdt in root.findall('.//w:sdt', namespaces):
+                    parent = parent_map.get(sdt)
+                    if parent is not None:
+                        sdt_index = list(parent).index(sdt)
+                        sdt_content = sdt.find('.//w:sdtContent', namespaces)
+                        if sdt_content is not None:
+                            for child in list(sdt_content):
+                                parent.insert(sdt_index, child)
+                                sdt_index += 1
+                        parent.remove(sdt)
+                        sdts_removed += 1
+
+                # 2. REMOVE ALL PARAGRAPH STYLES (force to Normal)
+                for para in root.findall('.//w:p', namespaces):
+                    for pPr in para.findall('.//w:pPr', namespaces):
+                        for pStyle in pPr.findall('.//w:pStyle', namespaces):
+                            pPr.remove(pStyle)
+                            styles_removed += 1
+
+                # 3. FORCE ALL TEXT TO BLACK
+                for rPr in root.findall('.//w:rPr', namespaces):
+                    # Remove existing color elements
+                    for color_elem in list(rPr):
+                        if 'color' in str(color_elem.tag).lower() or 'highlight' in str(color_elem.tag).lower():
+                            rPr.remove(color_elem)
+
+                    # Add black color
+                    color_elem = ET.Element('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                    color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+
+                    # Remove theme attributes
+                    for attr in ['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                 '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                        if attr in color_elem.attrib:
+                            del color_elem.attrib[attr]
+
+                    rPr.insert(0, color_elem)
+                    colors_forced += 1
+
+                # 4. REMOVE ALL SHADING
+                for shd in root.findall('.//w:shd', namespaces):
+                    parent = parent_map.get(shd)
+                    if parent is not None:
+                        parent.remove(shd)
+                        shading_removed += 1
+
+                # 5. REMOVE ALL BORDERS
+                for pBdr in root.findall('.//w:pBdr', namespaces):
+                    parent = parent_map.get(pBdr)
+                    if parent is not None:
+                        parent.remove(pBdr)
+                        borders_removed += 1
+
+                # 6. REMOVE SELECTED IMAGES from document
+                images_removed = remove_images_from_xml(document_xml, "document.xml")
+
+                # 7. REPLACE KEYWORDS
+                for text_elem in root.findall('.//w:t', namespaces):
+                    if text_elem.text:
+                        original = text_elem.text
+                        new_text = self.replace_keywords_in_text(original)
+                        if new_text != original:
+                            text_elem.text = new_text
+                            text_replacements += 1
+
+                tree.write(document_xml, encoding='utf-8', xml_declaration=True)
+
+                print(f"    ✓ Removed {sdts_removed} content controls")
+                print(f"    ✓ Removed {styles_removed} paragraph styles")
+                print(f"    ✓ Forced {colors_forced} text runs to black")
+                print(f"    ✓ Removed {shading_removed} shading elements")
+                print(f"    ✓ Removed {borders_removed} borders")
+                print(f"    ✓ Made {text_replacements} keyword replacements")
+
+            # Process ALL header and footer files
+            print("  Processing headers and footers...")
+            word_dir = temp_dir / 'word'
+            header_footer_images = 0
+
+            if word_dir.exists():
+                # Process all header files
+                for header_file in word_dir.glob('header*.xml'):
+                    count = remove_images_from_xml(header_file, header_file.name)
+                    header_footer_images += count
+
+                # Process all footer files
+                for footer_file in word_dir.glob('footer*.xml'):
+                    count = remove_images_from_xml(footer_file, footer_file.name)
+                    header_footer_images += count
+
+            if header_footer_images > 0:
+                print(f"  ✓ Removed {header_footer_images} images from headers/footers")
+
+            images_removed += header_footer_images
+
+            # Neutralize theme files
+            print("  Neutralizing theme files...")
+            theme_dir = temp_dir / 'word' / 'theme'
+            if theme_dir.exists():
+                for theme_file in theme_dir.glob('*.xml'):
+                    try:
+                        tree = ET.parse(theme_file)
+                        root = tree.getroot()
+                        for element in root.iter():
+                            if 'srgbClr' in str(element.tag):
+                                element.set('val', '000000')
+                            elif 'sysClr' in str(element.tag):
+                                element.set('val', 'windowText')
+                                element.set('lastClr', '000000')
+                        tree.write(theme_file, encoding='utf-8', xml_declaration=True)
+                    except:
+                        pass
+
+            # Neutralize styles.xml
+            print("  Neutralizing styles.xml...")
+            styles_xml = temp_dir / 'word' / 'styles.xml'
+            if styles_xml.exists():
+                tree = ET.parse(styles_xml)
+                root = tree.getroot()
+                parent_map = {c: p for p in tree.iter() for c in p}
+
+                elements_to_remove = []
+                for elem in root.iter():
+                    if 'color' in str(elem.tag).lower() or 'shd' in str(elem.tag).lower():
+                        elements_to_remove.append(elem)
+
+                for elem in elements_to_remove:
+                    parent = parent_map.get(elem)
+                    if parent is not None:
+                        try:
+                            parent.remove(elem)
+                        except:
+                            pass
+
+                tree.write(styles_xml, encoding='utf-8', xml_declaration=True)
+
+            # Save to temp file WITHOUT deleting images yet
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_preprocessed:
+                preprocessed_path = tmp_preprocessed.name
+
+            with zipfile.ZipFile(preprocessed_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                for file_path in temp_dir.rglob('*'):
+                    if file_path.is_file():
+                        arc_path = file_path.relative_to(temp_dir)
+                        zip_out.write(file_path, arc_path)
+
+        # PHASE 2: Python-docx processing for remaining cleanup
+        print("\nPhase 2: Processing with python-docx for final cleanup...")
+
+        if not DOCX_AVAILABLE:
+            print("  python-docx not available, skipping to final cleanup...")
+            temp_output = preprocessed_path
+        else:
+            try:
+                doc = Document(preprocessed_path)
+
+                # Process all paragraphs
+                for para in doc.paragraphs:
+                    try:
+                        if para.style.name != 'Normal':
+                            para.style = doc.styles['Normal']
+                    except:
+                        pass
+
+                    for run in para.runs:
+                        self.standardize_run_formatting(run)
+
+                # Process tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        self.remove_table_row_shading(row)
+                        for cell in row.cells:
+                            self.remove_table_cell_shading(cell)
+                            for paragraph in cell.paragraphs:
+                                try:
+                                    if paragraph.style.name != 'Normal':
+                                        paragraph.style = doc.styles['Normal']
+                                except:
+                                    pass
+                                for run in paragraph.runs:
+                                    self.standardize_run_formatting(run)
+
+                # Process headers/footers
+                for section in doc.sections:
+                    if section.header:
+                        for paragraph in section.header.paragraphs:
+                            try:
+                                if paragraph.style.name != 'Normal':
+                                    paragraph.style = doc.styles['Normal']
+                            except:
+                                pass
+                            for run in paragraph.runs:
+                                self.standardize_run_formatting(run)
+
+                    if section.footer:
+                        for paragraph in section.footer.paragraphs:
+                            try:
+                                if paragraph.style.name != 'Normal':
+                                    paragraph.style = doc.styles['Normal']
+                            except:
+                                pass
+                            for run in paragraph.runs:
+                                self.standardize_run_formatting(run)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_phase2:
+                    temp_output = tmp_phase2.name
+
+                doc.save(temp_output)
+
+                try:
+                    os.unlink(preprocessed_path)
+                except:
+                    pass
+
+            except Exception as e:
+                print(f"  Warning: python-docx processing failed: {e}")
+                print("  Continuing with phase 1 output...")
+                temp_output = preprocessed_path
+
+        # PHASE 3: Final cleanup - NOW remove the physical image files
+        print("\nPhase 3: Final cleanup - removing physical image files...")
+
+        with tempfile.TemporaryDirectory() as final_temp_dir:
+            final_temp_dir = Path(final_temp_dir)
+
+            with zipfile.ZipFile(temp_output, 'r') as zip_ref:
+                zip_ref.extractall(final_temp_dir)
+
+            # Delete the physical image files
+            media_dir = final_temp_dir / 'word' / 'media'
+            files_deleted = 0
+            if images_to_remove and media_dir.exists():
+                for filename in images_to_remove:
+                    image_file = media_dir / filename
+                    if image_file.exists():
+                        try:
+                            image_file.unlink()
+                            files_deleted += 1
+                        except Exception as e:
+                            print(f"  Warning: Could not delete {filename}: {e}")
+
+            print(f"  Removed {files_deleted} physical image files")
+
+            # Rebuild final DOCX
+            with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zip_out:
+                for file_path in final_temp_dir.rglob('*'):
+                    if file_path.is_file():
+                        arc_path = file_path.relative_to(final_temp_dir)
+                        zip_out.write(file_path, arc_path)
+
+        # Clean up temp file
+        try:
+            os.unlink(temp_output)
+        except:
+            pass
+
+        print(f"\n{'=' * 70}")
+        print("✅ PROCESSING COMPLETE")
+        print(f"{'=' * 70}")
+        print(f"✓ Removed {images_removed} selected images (kept {len(image_hash_map) - len(images_to_remove)})")
+        print(f"✓ Removed {sdts_removed} content controls")
+        print(f"✓ Reset {styles_removed} paragraph styles to Normal")
+        print(f"✓ Forced {colors_forced} text runs to black")
+        print(f"✓ Removed {shading_removed} shading elements")
+        print(f"✓ Removed {borders_removed} borders")
+        print(f"✓ Made {text_replacements} keyword replacements")
+        print(f"✓ Neutralized themes and styles")
+        print()
+
+        return output_path
     def process_html_file(self, input_path, output_path):
         """Process HTML file - remove images and replace keywords, keep structure and CSS"""
         if not HTML_AVAILABLE:
@@ -1986,7 +2427,11 @@ class FileBlinder:
             print()
 
             if extension == '.docx':
-                if method == 'xml':
+                # Use selective method if image hashes are provided
+                if self.image_hashes_to_remove:
+                    result = self.process_docx_selective(input_path, output_path)
+                    print("✓ DOCX processed with selective image removal")
+                elif method == 'xml':
                     result = self.process_docx_xml_safe(input_path, output_path)
                     print("✓ DOCX processed with XML method")
                 else:

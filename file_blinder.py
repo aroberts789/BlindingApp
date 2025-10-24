@@ -2005,6 +2005,7 @@ class FileBlinder:
             print()
 
             return output_temp
+
     def process_docx_selective(self, input_path, output_path):
         """
         Process DOCX with selective image removal AND complete formatting standardization.
@@ -2020,9 +2021,7 @@ class FileBlinder:
         else:
             print("Will remove ALL images (no selection provided)")
         print()
-        # STEP 0: Remove selected images FIRST (simple, focused deletion)
-        input_path = Path(input_path)
-        temp_no_images = self.remove_selected_images_simple(input_path)
+
         # PHASE 1: XML-level preprocessing
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_dir = Path(temp_dir)
@@ -2034,13 +2033,13 @@ class FileBlinder:
             namespaces = {
                 'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
                 'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+                'rel': 'http://schemas.openxmlformats.org/package/2006/relationships',
+                'v': 'urn:schemas-microsoft-com:vml',
+                'o': 'urn:schemas-microsoft-com:office:office'
             }
 
             for prefix, uri in namespaces.items():
                 ET.register_namespace(prefix, uri)
-
-            # Register the relationships namespace
-            ET.register_namespace('', 'http://schemas.openxmlformats.org/package/2006/relationships')
 
             # Build image hash map for selective removal
             print("  Analyzing images...")
@@ -2070,10 +2069,12 @@ class FileBlinder:
             # Get ALL relationship IDs for images to remove (from all rels files)
             print("  Processing relationships...")
             rel_ids_to_remove = set()
+            rels_files_to_update = []
 
             # Process main document relationships
             rels_file = temp_dir / 'word' / '_rels' / 'document.xml.rels'
             if rels_file.exists():
+                rels_files_to_update.append(rels_file)
                 tree = ET.parse(rels_file)
                 root = tree.getroot()
                 for rel in root.findall(
@@ -2096,6 +2097,7 @@ class FileBlinder:
                     try:
                         tree = ET.parse(rels_file)
                         root = tree.getroot()
+                        has_images = False
                         for rel in root.findall(
                                 './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
                             target = rel.get('Target')
@@ -2104,65 +2106,106 @@ class FileBlinder:
                                 if filename in images_to_remove:
                                     rel_id = rel.get('Id')
                                     rel_ids_to_remove.add(rel_id)
+                                    has_images = True
                                     print(f"    Found in {rels_file.name}: {filename} -> {rel_id}")
+
+                        if has_images:
+                            rels_files_to_update.append(rels_file)
                     except Exception as e:
                         print(f"    Warning: Could not process {rels_file.name}: {e}")
 
             print(f"  Total relationship IDs to remove: {len(rel_ids_to_remove)}\n")
 
-            # Helper function to remove image runs from an XML file
-            def remove_images_from_xml(xml_path, xml_name):
-                """Remove ENTIRE RUNS that contain drawing references from any XML file"""
-                if not xml_path.exists():
-                    return 0
-
+            # REMOVE RELATIONSHIPS FROM .RELS FILES
+            print("  Removing relationships from .rels files...")
+            for rels_file_path in rels_files_to_update:
                 try:
-                    tree = ET.parse(xml_path)
+                    tree = ET.parse(rels_file_path)
                     root = tree.getroot()
-                    parent_map = {c: p for p in tree.iter() for c in p}
+                    rels_removed = 0
 
-                    runs_removed = 0
+                    # Find and remove relationships
+                    for rel in list(root.findall(
+                            './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship')):
+                        rel_id = rel.get('Id')
+                        if rel_id in rel_ids_to_remove:
+                            root.remove(rel)
+                            rels_removed += 1
 
-                    # Find all runs (w:r elements)
-                    runs_to_remove = []
-                    for run in root.findall('.//w:r', namespaces):
-                        should_remove = False
+                    if rels_removed > 0:
+                        tree.write(rels_file_path, encoding='utf-8', xml_declaration=True)
+                        print(f"    ✓ Removed {rels_removed} relationships from {rels_file_path.name}")
 
-                        # Check if this run contains a drawing with our target image
-                        for drawing in run.iter():
-                            tag_lower = str(drawing.tag).lower()
-                            if 'drawing' in tag_lower or 'pict' in tag_lower or 'object' in tag_lower:
-                                # Check all blips in this drawing
-                                for blip in drawing.iter():
-                                    if 'blip' in str(blip.tag).lower():
-                                        embed_attr = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
-                                        if embed_attr in blip.attrib:
-                                            rel_id = blip.attrib[embed_attr]
-                                            if rel_id in rel_ids_to_remove:
-                                                should_remove = True
-                                                break
-                            if should_remove:
+                except Exception as e:
+                    print(f"    ✗ Error updating {rels_file_path.name}: {e}")
+
+            # Helper function to remove images from a tree (does NOT save)
+            def remove_images_from_tree(root, parent_map):
+                """Remove drawing references AND their parent runs from tree"""
+                runs_to_remove = []
+                drawings_found = 0
+
+                # Find all runs (w:r elements)
+                for run in root.findall('.//w:r', namespaces):
+                    should_remove_run = False
+
+                    # Check for drawings (modern format)
+                    for drawing in run.findall('.//w:drawing', namespaces):
+                        for blip in drawing.iter():
+                            if 'blip' in str(blip.tag).lower():
+                                embed_attr = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+                                if embed_attr in blip.attrib:
+                                    rel_id = blip.attrib[embed_attr]
+                                    if rel_id in rel_ids_to_remove:
+                                        should_remove_run = True
+                                        drawings_found += 1
+                                        break
+                        if should_remove_run:
+                            break
+
+                    # Check for pictures (older format - w:pict)
+                    if not should_remove_run:
+                        for pict in run.findall('.//w:pict', namespaces):
+                            for elem in pict.iter():
+                                if 'imagedata' in str(elem.tag).lower():
+                                    rel_id = elem.get(
+                                        '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                                    if rel_id and rel_id in rel_ids_to_remove:
+                                        should_remove_run = True
+                                        drawings_found += 1
+                                        break
+                            if should_remove_run:
                                 break
 
-                        # Add to removal list if it contains a target image
-                        if should_remove:
-                            runs_to_remove.append(run)
+                    # Check for objects (embedded objects)
+                    if not should_remove_run:
+                        for obj in run.findall('.//w:object', namespaces):
+                            for elem in obj.iter():
+                                if 'imagedata' in str(elem.tag).lower():
+                                    rel_id = elem.get(
+                                        '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                                    if rel_id and rel_id in rel_ids_to_remove:
+                                        should_remove_run = True
+                                        drawings_found += 1
+                                        break
+                            if should_remove_run:
+                                break
 
-                    # Remove the runs
-                    for run in runs_to_remove:
-                        parent = parent_map.get(run)
-                        if parent is not None:
+                    if should_remove_run:
+                        runs_to_remove.append(run)
+
+                # Remove the runs
+                runs_removed = 0
+                for run in runs_to_remove:
+                    parent = parent_map.get(run)
+                    if parent is not None:
+                        try:
                             parent.remove(run)
                             runs_removed += 1
+                        except Exception as e:
+                            print(f"      Warning: Could not remove run: {e}")
 
-                    if runs_removed > 0:
-                        tree.write(xml_path, encoding='utf-8', xml_declaration=True)
-                        print(f"    ✓ Removed {runs_removed} image runs from {xml_name}")
-
-                    return runs_removed
-                except Exception as e:
-                    print(f"    ✗ Error processing {xml_name}: {e}")
-                    return 0
+                return runs_removed, drawings_found
 
             # Process document.xml - COMPREHENSIVE CLEANUP
             document_xml = temp_dir / 'word' / 'document.xml'
@@ -2235,8 +2278,12 @@ class FileBlinder:
                         parent.remove(pBdr)
                         borders_removed += 1
 
-                # 6. REMOVE SELECTED IMAGES from document
-                images_removed = remove_images_from_xml(document_xml, "document.xml")
+                # 6. REMOVE SELECTED IMAGES from document (using same tree, does NOT save yet)
+                # Need to rebuild parent map after all the removals above
+                parent_map = {c: p for p in tree.iter() for c in p}
+                runs_removed, drawings_found = remove_images_from_tree(root, parent_map)
+                images_removed = runs_removed
+                print(f"    ✓ Removed {runs_removed} runs containing {drawings_found} images from document.xml")
 
                 # 7. REPLACE KEYWORDS
                 for text_elem in root.findall('.//w:t', namespaces):
@@ -2247,6 +2294,7 @@ class FileBlinder:
                             text_elem.text = new_text
                             text_replacements += 1
 
+                # NOW save everything at once
                 tree.write(document_xml, encoding='utf-8', xml_declaration=True)
 
                 print(f"    ✓ Removed {sdts_removed} content controls")
@@ -2256,6 +2304,69 @@ class FileBlinder:
                 print(f"    ✓ Removed {borders_removed} borders")
                 print(f"    ✓ Made {text_replacements} keyword replacements")
 
+            # Helper function for header/footer files
+            def process_header_footer_file(xml_path, xml_name):
+                """Process header/footer XML file - remove images and clean formatting"""
+                if not xml_path.exists():
+                    return 0
+
+                try:
+                    tree = ET.parse(xml_path)
+                    root = tree.getroot()
+                    parent_map = {c: p for p in tree.iter() for c in p}
+
+                    # Remove images
+                    runs_removed, drawings_found = remove_images_from_tree(root, parent_map)
+
+                    # Force all text to black (same as document)
+                    colors_forced = 0
+                    for rPr in root.findall('.//w:rPr', namespaces):
+                        # Remove existing color elements
+                        for color_elem in list(rPr):
+                            if 'color' in str(color_elem.tag).lower() or 'highlight' in str(color_elem.tag).lower():
+                                rPr.remove(color_elem)
+
+                        # Add black color
+                        color_elem = ET.Element('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color')
+                        color_elem.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '000000')
+
+                        for attr in ['{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeColor',
+                                     '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeTint',
+                                     '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}themeShade']:
+                            if attr in color_elem.attrib:
+                                del color_elem.attrib[attr]
+
+                        rPr.insert(0, color_elem)
+                        colors_forced += 1
+
+                    # Remove paragraph styles
+                    styles_removed = 0
+                    parent_map = {c: p for p in tree.iter() for c in p}
+                    for para in root.findall('.//w:p', namespaces):
+                        for pPr in para.findall('.//w:pPr', namespaces):
+                            for pStyle in pPr.findall('.//w:pStyle', namespaces):
+                                pPr.remove(pStyle)
+                                styles_removed += 1
+
+                    # Remove shading
+                    shading_removed = 0
+                    parent_map = {c: p for p in tree.iter() for c in p}
+                    for shd in root.findall('.//w:shd', namespaces):
+                        parent = parent_map.get(shd)
+                        if parent is not None:
+                            parent.remove(shd)
+                            shading_removed += 1
+
+                    if runs_removed > 0 or colors_forced > 0 or styles_removed > 0 or shading_removed > 0:
+                        tree.write(xml_path, encoding='utf-8', xml_declaration=True)
+                        print(
+                            f"    ✓ Processed {xml_name}: {runs_removed} image runs, {colors_forced} colors, {styles_removed} styles, {shading_removed} shading")
+
+                    return runs_removed
+                except Exception as e:
+                    print(f"    ✗ Error processing {xml_name}: {e}")
+                    return 0
+
             # Process ALL header and footer files
             print("  Processing headers and footers...")
             word_dir = temp_dir / 'word'
@@ -2264,73 +2375,15 @@ class FileBlinder:
             if word_dir.exists():
                 # Process all header files
                 for header_file in word_dir.glob('header*.xml'):
-                    count = remove_images_from_xml(header_file, header_file.name)
+                    count = process_header_footer_file(header_file, header_file.name)
                     header_footer_images += count
 
                 # Process all footer files
                 for footer_file in word_dir.glob('footer*.xml'):
-                    count = remove_images_from_xml(footer_file, footer_file.name)
+                    count = process_header_footer_file(footer_file, footer_file.name)
                     header_footer_images += count
 
-            if header_footer_images > 0:
-                print(f"  ✓ Removed {header_footer_images} images from headers/footers")
-
             images_removed += header_footer_images
-
-            # Clean up image relationships
-            print("  Cleaning up image relationships...")
-            rels_cleaned = 0
-
-            # Clean main document relationships
-            doc_rels = temp_dir / 'word' / '_rels' / 'document.xml.rels'
-            if doc_rels.exists():
-                try:
-                    tree = ET.parse(doc_rels)
-                    root = tree.getroot()
-
-                    rels_to_remove = []
-                    for rel in root.findall(
-                            './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
-                        rel_id = rel.get('Id')
-                        if rel_id in rel_ids_to_remove:
-                            rels_to_remove.append(rel)
-
-                    for rel in rels_to_remove:
-                        root.remove(rel)
-                        rels_cleaned += 1
-
-                    if rels_to_remove:
-                        tree.write(doc_rels, encoding='utf-8', xml_declaration=True)
-                except Exception as e:
-                    print(f"    Warning: Error cleaning document.xml.rels: {e}")
-
-            # Clean header/footer relationships
-            for rels_file in (temp_dir / 'word' / '_rels').glob('*.xml.rels'):
-                if rels_file.name == 'document.xml.rels':
-                    continue
-
-                try:
-                    tree = ET.parse(rels_file)
-                    root = tree.getroot()
-
-                    rels_to_remove = []
-                    for rel in root.findall(
-                            './/{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
-                        rel_id = rel.get('Id')
-                        if rel_id in rel_ids_to_remove:
-                            rels_to_remove.append(rel)
-
-                    for rel in rels_to_remove:
-                        root.remove(rel)
-                        rels_cleaned += 1
-
-                    if rels_to_remove:
-                        tree.write(rels_file, encoding='utf-8', xml_declaration=True)
-                except Exception as e:
-                    print(f"    Warning: Error cleaning {rels_file.name}: {e}")
-
-            if rels_cleaned > 0:
-                print(f"  ✓ Cleaned {rels_cleaned} image relationships")
 
             # Neutralize theme files
             print("  Neutralizing theme files...")
@@ -2373,7 +2426,7 @@ class FileBlinder:
 
                 tree.write(styles_xml, encoding='utf-8', xml_declaration=True)
 
-            # Save to temp file
+            # Save to temp file WITHOUT deleting images yet
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_preprocessed:
                 preprocessed_path = tmp_preprocessed.name
 
@@ -2496,16 +2549,16 @@ class FileBlinder:
         print(f"\n{'=' * 70}")
         print("✅ PROCESSING COMPLETE")
         print(f"{'=' * 70}")
-        print(f"✓ Removed {images_removed} selected images (kept {len(image_hash_map) - len(images_to_remove)})")
+        print(
+            f"✓ Removed {images_removed} runs containing images (kept {len(image_hash_map) - len(images_to_remove)} images)")
         print(f"✓ Removed {sdts_removed} content controls")
         print(f"✓ Reset {styles_removed} paragraph styles to Normal")
         print(f"✓ Forced {colors_forced} text runs to black")
         print(f"✓ Removed {shading_removed} shading elements")
         print(f"✓ Removed {borders_removed} borders")
         print(f"✓ Made {text_replacements} keyword replacements")
-        print(f"✓ Cleaned {rels_cleaned} image relationships")
-        print(f"✓ Deleted {files_deleted} media files")
         print(f"✓ Neutralized themes and styles")
+        print(f"✓ Removed {len(rel_ids_to_remove)} image relationships")
         print()
 
         return output_path

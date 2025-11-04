@@ -2290,7 +2290,7 @@ class FileBlinder:
                     if text_elem.text:
                         original = text_elem.text
                         new_text = self.replace_keywords_in_text(original)
-                        if new_text != original:
+                        ifaz new_text != original:
                             text_elem.text = new_text
                             text_replacements += 1
 

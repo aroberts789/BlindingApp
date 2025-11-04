@@ -1420,9 +1420,6 @@ HTML_TEMPLATE = """
                     <div class="results" id="results"></div>
 
                     <div style="text-align: center; margin-top: 30px;">
-                        <button type="button" class="btn btn-secondary" id="previewBtn" disabled style="margin-right: 10px;" onclick="showPreview()">
-                            Preview Changes
-                        </button>
                         <button type="button" class="btn" id="processBtn" disabled>Blind Files</button>
                     </div>
                 </form>
